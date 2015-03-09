@@ -3,7 +3,6 @@ from django.db import models
 from django.forms.fields import Field
 from django.forms.util import ValidationError
 
-
 from south.modelsinspector import add_introspection_rules
 
 # modified version of JSONField and JSONFormField: bradjasper/django-jsonfield
