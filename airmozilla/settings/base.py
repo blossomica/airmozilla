@@ -335,6 +335,7 @@ GOD_MODE = False
 BROWSERID_DISABLED = False
 
 
+
 # How many times to try sending out an event tweet.
 MAX_TWEET_ATTEMPTS = 3
 
@@ -355,3 +356,8 @@ THUMBNAIL_BACKEND = 'airmozilla.base.thumbnailer.OptimizingThumbnailBackend'
 # This turns of the thumbnail optimizer using pngquant so it's
 # not used unless you explicitely turn it on. 
 PNGQUANT_LOCATION = None
+
+# This is here in order to override the code related to elastic search
+# once things are said and done, ie. it works, this will be deleted
+USE_RELATED_CONTENT = False
+
