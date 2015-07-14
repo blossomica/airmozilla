@@ -369,3 +369,7 @@ PNGQUANT_LOCATION = None
 # once things are said and done, ie. it works, this will be deleted
 USE_RELATED_CONTENT = False
 
+
+# Adding prefix to airmozilla events index
+ELASTICSEARCH_PREFIX = 'airmozilla'
+ELASTICSEARCH_INDEX = 'events'
