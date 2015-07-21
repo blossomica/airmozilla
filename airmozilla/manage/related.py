@@ -7,17 +7,15 @@ from django.utils import timezone
 from airmozilla.main.models import Event
 
 
+def get_connection():
+    return pyelasticsearch.ElasticSearch(settings.RELATED_CONTENT_URL)
+
+
 def index(all=False, flush_first=False, since=datetime.timedelta(minutes=10)):
-    es = pyelasticsearch.ElasticSearch(settings.RELATED_CONTENT_URL)
+    es = get_connection()
 
     if flush_first:
-        try:
-            es.flush(
-                settings.ELASTICSEARCH_PREFIX + settings.ELASTICSEARCH_INDEX
-            )
-        except pyelasticsearch.exceptions.ElasticHttpNotFoundError:
-            # if the index isn't there we can't flush it
-            pass
+        flush(es)
 
     if all:
         events = Event.objects.scheduled_or_processing()
@@ -38,7 +36,17 @@ def index(all=False, flush_first=False, since=datetime.timedelta(minutes=10)):
                 'channels': [x.name for x in event.channels.all()],
             },
             id=event.id,
-
         )
 
     es.refresh(settings.ELASTICSEARCH_PREFIX + settings.ELASTICSEARCH_INDEX)
+
+
+def flush(es=None):
+    es = es or get_connection()
+    try:
+        es.flush(
+            settings.ELASTICSEARCH_PREFIX + settings.ELASTICSEARCH_INDEX
+        )
+    except pyelasticsearch.exceptions.ElasticHttpNotFoundError:
+        # if the index isn't there we can't flush it
+        pass
