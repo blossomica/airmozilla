@@ -4,7 +4,6 @@ import json
 import urllib
 import time
 import collections
-import pyelasticsearch
 
 from django import http
 from django.conf import settings
@@ -51,6 +50,7 @@ from airmozilla.search.models import LoggedSearch
 from airmozilla.comments.models import Discussion
 from airmozilla.surveys.models import Survey
 from airmozilla.manage import vidly
+from airmozilla.manage import related
 from airmozilla.main.helpers import short_desc
 from airmozilla.base import mozillians
 from airmozilla.base.utils import get_base_url
@@ -1152,20 +1152,20 @@ class EventsFeed(Feed):
 def related_content(request, slug):
     event = get_object_or_404(Event, slug=slug)
 
-    es = pyelasticsearch.ElasticSearch(settings.RELATED_CONTENT_URL)
+    es = related.get_connection()
 
     fields = ['title', 'tags']
     if list(event.channels.all()) != [
             Channel.objects.get(slug=settings.DEFAULT_CHANNEL_SLUG)]:
         fields.append('channel')
 
+    index = settings.ELASTICSEARCH_PREFIX + settings.ELASTICSEARCH_INDEX
     mlt_query = {
         "more_like_this": {
             "fields": fields,
             "docs": [
                 {
-                    "_index": settings.ELASTICSEARCH_PREFIX
-                    + settings.ELASTICSEARCH_INDEX,
+                    "_index": index,
                     "_type": "event",
                     "_id": event.id
                 }],
@@ -1213,8 +1213,7 @@ def related_content(request, slug):
     query['from'] = 0
     query['size'] = settings.RELATED_CONTENT_SIZE
     ids = []
-    hits = es.search(query, index='events')['hits']
-
+    hits = es.search(query, index=index)['hits']
     for doc in hits['hits']:
         print "\t", repr(doc['_source']['title']), doc['_id'], doc['_score']
         ids.append(int(doc['_id']))
