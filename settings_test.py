@@ -71,3 +71,6 @@ AUTOCOMPETER_DOMAIN = ''
 # make sure these are definitely off
 GOD_MODE = False
 BROWSERID_DISABLED = False
+
+# Elastic search test indexing
+ELASTICSEARCH_INDEX = 'test-events'
