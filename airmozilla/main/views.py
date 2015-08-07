@@ -56,7 +56,6 @@ from . import cloud
 from . import forms
 
 
-
 def debugger__(request):
     r = http.HttpResponse()
     r.write('BROWSERID_AUDIENCES=%r\n' % settings.BROWSERID_AUDIENCES)
@@ -1127,17 +1126,55 @@ def related_content(request, slug):
         fields.append('channel')
 
     index = settings.ELASTICSEARCH_PREFIX + settings.ELASTICSEARCH_INDEX
+    doc_type = 'event'
+
+    mlt_query1 = {
+        'more_like_this': {
+            'fields': ['title'],
+            'docs': [
+                {
+                    '_index': index,
+                    '_type': doc_type,
+                    '_id': 1
+                }],
+            'min_term_freq': 1,
+            'max_query_terms': 20,
+            'min_doc_freq': 1,
+            'boost': 1.0,
+            'include': False,  # doesn't seem to work
+        }
+    }
+    mlt_query2 = {
+        'more_like_this': {
+            'fields': ['tags'],
+            'docs': [
+                {
+                    '_index': index,
+                    '_type': doc_type,
+                    '_id': 1
+                }],
+            'min_term_freq': 1,
+            'max_query_terms': 20,
+            'min_doc_freq': 1,
+            'boost': -0.5,
+            'include': False,  # doesn't seem to work
+        }
+    }
+
     mlt_query = {
         "more_like_this": {
             "fields": fields,
-            "docs": [
-                {
-                    "_index": index,
-                    "_type": "event",
-                    "_id": event.id
-                }],
-            "min_term_freq": 1,
-            "max_query_terms": 20,
+            "query": {
+                "filter": {
+                    "bool": {
+                        "should": [mlt_query1, mlt_query2],
+                        # "should": [
+                        #              { "match": mlt_query1 },
+                        #              { "match": mlt_query2 }
+                        # ]
+                    }
+                }
+            }
         }
     }
 

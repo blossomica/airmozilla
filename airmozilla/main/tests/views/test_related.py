@@ -50,16 +50,17 @@ class RelatedTestCase(DjangoTestCase):
         # es=related.get_connection()
         # idx = settings.ELASTICSEARCH_PREFIX + settings.ELASTICSEARCH_INDEX
         # mlt_query = {
-        #     "more_like_this" : {
-        #         "fields" : ["title",],
-        #         "docs" : [
+        #     'more_like_this' : {
+        #         'fields' : ['title',],
+        #         'docs' : [
         #         {
-        #             "_index" : idx,
-        #             "_type" : "event",
-        #             "_id" : str(event.id)
+        #             '_index' : idx,
+        #             '_type' : 'event',
+        #             '_id' : str(event.id)
         #         }],
-        #         "min_term_freq" : 1,
-        #         "max_query_terms" : 12
+        #         'min_term_freq': 1,
+        #         'min_term_freq' : 1,
+        #         'max_query_terms' : 12
         #     }
         # }
         # print "SEARCH!!!"
