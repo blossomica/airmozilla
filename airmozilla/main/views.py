@@ -55,6 +55,8 @@ from airmozilla.staticpages.views import staticpage
 from . import cloud
 from . import forms
 
+import pyelasticsearch
+
 
 def debugger__(request):
     r = http.HttpResponse()
@@ -1118,15 +1120,15 @@ class EventsFeed(Feed):
 def related_content(request, slug):
     event = get_object_or_404(Event, slug=slug)
 
+    index = settings.ELASTICSEARCH_PREFIX + settings.ELASTICSEARCH_INDEX
+    doc_type = 'event'
+    
     es = related.get_connection()
 
     fields = ['title', 'tags']
     if list(event.channels.all()) != [
             Channel.objects.get(slug=settings.DEFAULT_CHANNEL_SLUG)]:
         fields.append('channel')
-
-    index = settings.ELASTICSEARCH_PREFIX + settings.ELASTICSEARCH_INDEX
-    doc_type = 'event'
 
     mlt_query1 = {
         'more_like_this': {
@@ -1135,13 +1137,12 @@ def related_content(request, slug):
                 {
                     '_index': index,
                     '_type': doc_type,
-                    '_id': 1
+                    '_id': event.id
                 }],
             'min_term_freq': 1,
             'max_query_terms': 20,
             'min_doc_freq': 1,
             'boost': 1.0,
-            'include': False,  # doesn't seem to work
         }
     }
     mlt_query2 = {
@@ -1151,59 +1152,50 @@ def related_content(request, slug):
                 {
                     '_index': index,
                     '_type': doc_type,
-                    '_id': 1
+                    '_id': event.id
                 }],
             'min_term_freq': 1,
             'max_query_terms': 20,
             'min_doc_freq': 1,
             'boost': -0.5,
-            'include': False,  # doesn't seem to work
-        }
-    }
-
-    mlt_query = {
-        "more_like_this": {
-            "fields": fields,
-            "query": {
-                "filter": {
-                    "bool": {
-                        "should": [mlt_query1, mlt_query2],
-                        # "should": [
-                        #              { "match": mlt_query1 },
-                        #              { "match": mlt_query2 }
-                        # ]
-                    }
-                }
-            }
         }
     }
 
     if request.user.is_active:
-        if is_contributor(request.user):
+       if is_contributor(request.user):
             query = {
-                "query": {
-                    "filtered": {
-                        "query": mlt_query,
-                        "filter": {
-                            "must_not": {
-                                "term": {
-                                    "privacy": Event.PRIVACY_COMPANY
-                                }
-                            }
-                        }
+            'fields': fields,
+            'query': {
+                'bool': {
+                    'should': [mlt_query1, mlt_query2],
+                }
+            },
+            "filter": {
+                "must_not": {
+                    "term": {
+                        "privacy": Event.PRIVACY_COMPANY
                     }
                 }
             }
-        else:
-            query = {
-                "query": mlt_query
+        }
+       else:
+            query = {            
+                'fields': fields,
+                'query': {
+                    'bool': {
+                        'should': [mlt_query1, mlt_query2],
+                    }
+                }
             }
     else:
         query = {
-            "query": {
-                "filtered": {
-                    "query": mlt_query,
-                    "filter": {
+                'fields': fields,
+                'query': {
+                    'bool': {
+                        'should': [mlt_query1, mlt_query2],
+                    }
+                },
+                "filter": {
                         "bool": {
                             "must": {
                                 "term": {"privacy": Event.PRIVACY_PUBLIC}
@@ -1211,8 +1203,6 @@ def related_content(request, slug):
                         }
                     }
                 }
-            }
-        }
 
     query['from'] = 0
     query['size'] = settings.RELATED_CONTENT_SIZE

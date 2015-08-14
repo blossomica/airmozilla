@@ -23,7 +23,7 @@ class RelatedTestCase(DjangoTestCase):
         super(RelatedTestCase, self).setUp()
         related.flush()
 
-    def test_related_content(self):
+    def test_related_content_logged(self):
         event = Event.objects.get(title='Test event')
         # make another event which is similar
         other = Event.objects.create(
@@ -69,10 +69,13 @@ class RelatedTestCase(DjangoTestCase):
         # from time import sleep
         # sleep(2)
 
+        self._login()
+
         url = reverse('main:related_content', args=(event.slug,))
         response = self.client.get(url)
         eq_(response.status_code, 200)
-        ok_('Event testing' in response.content)
+        ok_('Event test' in response.content)
+        print response.content
 
     # def test_unrelated(self):
     #     event = Event.objects.get(title='Test event')
