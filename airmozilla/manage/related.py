@@ -40,7 +40,7 @@ def index(all=False, flush_first=False, since=datetime.timedelta(minutes=10)):
         )
 
     es.refresh(settings.ELASTICSEARCH_PREFIX + settings.ELASTICSEARCH_INDEX)
-    # print es.delete_index(settings.ELASTICSEARCH_PREFIX + settings.ELASTICSEARCH_INDEX)
+  # print es.delete_index(settings.ELASTICSEARCH_PREFIX + settings.ELASTICSEARCH_INDEX)
 
 def flush(es=None):
     es = es or get_connection()
