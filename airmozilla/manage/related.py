@@ -93,3 +93,9 @@ def flush(es=None):
     # print es.create_index(index)
     except pyelasticsearch.exceptions.IndexAlreadyExistsError:
         print 'Index already created'
+
+
+def delete():
+    es = get_connection()
+    print es.delete_index(settings.ELASTICSEARCH_PREFIX
+                          + settings.ELASTICSEARCH_INDEX)
