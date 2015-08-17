@@ -1,6 +1,6 @@
-from django.contrib.auth.models import Group, User, Permission
-from django.conf import settings
-from django.test import TestCase
+# from django.contrib.auth.models import Group, User, Permission
+# from django.conf import settings
+# from django.test import TestCase
 
 from airmozilla.manage import related
 
@@ -9,8 +9,8 @@ from funfactory.urlresolvers import reverse
 from airmozilla.main.models import (
     Event,
     Tag,
-    Channel,
-    EventOldSlug,
+    # Channel,
+    # EventOldSlug,
 )
 
 from airmozilla.base.tests.testbase import DjangoTestCase
