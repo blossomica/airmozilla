@@ -1,0 +1,41 @@
+{% extends 'manage/manage_base.html' %}
+{% set page='events' -%}
+
+{% block manage_title %}
+  Event Assignment for "{{ event.title }}"
+{% endblock %}
+
+{% block site_css %}
+  {{ super() }}
+  {% stylesheet 'select2' %}
+  {% stylesheet 'select2_bootstrap' %}
+{% endblock %}
+
+{% block site_js %}
+  {{ super() }}
+  {% javascript 'select2' %}
+  {% javascript 'event_assignment' %}
+{% endblock %}
+
+
+{% block content_class %}col-md-6{% endblock %}
+
+{% block manage_content %}
+  {% if event.location %}
+  <p>
+    The main location of this event is: <b>{{ event.location }}</b>
+  </p>
+  {% endif %}
+
+  {% include "manage/_default_form.html" %}
+
+
+  <p style="margin-top:25px">
+    <b>Note!</b> Only users with the <b>{{ permission_required.name }}</b> permission
+    can be assigned.
+  </p>
+  <p style="margin-top:25px">
+    <a href="{{ url('manage:event_edit', event.pk) }}">&larr; Return to event</a>
+  </p>
+
+{% endblock %}

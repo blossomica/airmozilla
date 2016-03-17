@@ -1,9 +1,8 @@
-from django.contrib.sites.models import RequestSite
+from django.contrib.sites.requests import RequestSite
 from django.shortcuts import render
 from django.conf import settings
 from django.db.models import Q
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import Channel, Event
 from airmozilla.main.views import is_contributor

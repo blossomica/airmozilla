@@ -6,16 +6,16 @@ import collections
 
 from django import http
 from django.conf import settings
-from django.contrib.sites.models import RequestSite
+from django.contrib.sites.requests import RequestSite
 from django.shortcuts import get_object_or_404, redirect, render
 from django.core.cache import cache
 from django.views.decorators.cache import never_cache
 from django.views.generic.base import View
 from django.db.models import Count, Q, F
 from django.db import transaction
+from django.core.urlresolvers import reverse
+from django.template import engines
 
-from funfactory.urlresolvers import reverse
-from jingo import Template
 from jsonview.decorators import json_view
 
 from airmozilla.main.models import (
@@ -35,7 +35,7 @@ from airmozilla.base.utils import (
     edgecast_tokenize,
     akamai_tokenize,
 )
-from airmozilla.main.helpers import thumbnail
+from airmozilla.main.templatetags.jinja_helpers import thumbnail
 from airmozilla.search.models import LoggedSearch
 from airmozilla.comments.models import Discussion
 from airmozilla.surveys.models import Survey
@@ -225,9 +225,8 @@ def can_view_event(event, user):
             CuratedGroup.objects.filter(event=event).values_list('name')
         ]
         if curated_groups:
-            return mozillians.in_groups(
-                user.email,
-                curated_groups
+            return any(
+                [mozillians.in_group(user.email, x) for x in curated_groups]
             )
 
     return True
@@ -287,6 +286,13 @@ class EventView(View):
                     return redirect('main:event', slug=old_slug.event.slug)
                 except EventOldSlug.DoesNotExist:
                     # does it exist as a static page
+                    if slug.isdigit():
+                        # it might be the ID of the event
+                        try:
+                            return Event.objects.get(id=slug)
+                        except Event.DoesNotExist:
+                            # not that either
+                            pass
                     return self.cant_find_event(request, slug)
 
     @staticmethod
@@ -515,6 +521,11 @@ class EventView(View):
 
 
 def get_video_tagged(event, request, autoplay=False, tag=None):
+
+    def poster_url(geometry='896x504', crop='center'):
+        image = event.picture and event.picture.file or event.placeholder_img
+        return thumbnail(image, geometry, crop=crop).url
+
     context = {
         'md5': lambda s: hashlib.md5(s).hexdigest(),
         'event': event,
@@ -525,6 +536,7 @@ def get_video_tagged(event, request, autoplay=False, tag=None):
         'akamai_tokenize': akamai_tokenize,
         'popcorn_url': event.popcorn_url,
         'autoplay': autoplay and 'true' or 'false',  # javascript
+        'poster_url': poster_url,
     }
     if isinstance(event.template_environment, dict):
         context.update(event.template_environment)
@@ -536,7 +548,7 @@ def get_video_tagged(event, request, autoplay=False, tag=None):
         if not submissions.exists():
             raise VidlySubmission.DoesNotExist(tag)
         context['tag'] = tag
-    template = Template(event.template.content)
+    template = engines['backend'].from_string(event.template.content)
     try:
         template_tagged = template.render(context)
     except vidly.VidlyTokenizeError, msg:
@@ -953,6 +965,7 @@ def contributors(request):
     if users is None:
         users = mozillians.get_contributors()
         cache.set(cache_key, users, 60 * 60 * 24)
+
     context['users'] = reversed(users)
     return render(request, 'main/contributors.html', context)
 

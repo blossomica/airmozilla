@@ -2,9 +2,9 @@ from django.contrib import messages
 from django.shortcuts import render, redirect, get_object_or_404
 from django.db import transaction
 from django.db.models import Count
+from django.core.urlresolvers import reverse
 
 from jsonview.decorators import json_view
-from funfactory.urlresolvers import reverse
 
 from airmozilla.main.models import Event, Template
 from airmozilla.manage import forms
@@ -79,15 +79,14 @@ def template_edit(request, id):
                     other_template.default_archive_template = False
                     other_template.save()
 
-            messages.info(
+            messages.success(
                 request,
-                'Template <b>{name}</b> saved. [Edit again]({url})'.format(
+                'Template <b>{name}</b> saved.'.format(
                     name=template.name,
-                    url=reverse('manage:template_edit', args=(template.id,)),
                 )
             )
 
-            return redirect('manage:templates')
+            return redirect('manage:template_edit', template.id)
     else:
         form = forms.TemplateEditForm(instance=template)
 

@@ -286,7 +286,6 @@ div.warning p {
 ::selection { background: #d1d9df; color: #2a4956; }
 body { -webkit-tap-highlight-color: #d1d9df; }
 .main { margin-bottom: 35px; }
-body .entry-comments a { background-image: url(img/icn-comment.png); }
 
 legend { color: #b4b4b4; } /* For IE */
 
@@ -430,10 +429,6 @@ span.tag {
     margin-right: 15px;
 }
 
-/*** Comment Count */
-.entry-comments { background-color: #2d373b; }
-.entry-comments a { background-image: url("icn-comment.png"); border: 0; }
-
 /*** Link buttons */
 body .edit a, body #cancel-comment-reply a { border-color: #45555b; color: #ddd;
   background: #2d373b;
@@ -551,4 +546,9 @@ px      68    160    252    344    436    */
   .main-feature .entry-summary { position: static; padding: 0 24px 0 0; }
   .main-feature .entry-summary .wp-post-image { width: 148px; }
 
+}
+
+/* For all angular apps in main */
+[ng\:cloak], [ng-cloak], [data-ng-cloak], [x-ng-cloak], .ng-cloak, .x-ng-cloak {
+    display: none !important;
 }

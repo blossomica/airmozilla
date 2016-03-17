@@ -1,14 +1,21 @@
+# -*- coding: utf-8 -*-
+
 import json
 import os
 from cStringIO import StringIO
 from xml.parsers.expat import ExpatError
+
+import requests
+import xmltodict
+from PIL import Image
+from slugify import slugify
 
 from django import http
 from django.shortcuts import render, get_object_or_404, redirect
 from django.db import transaction
 from django.conf import settings
 from django.utils import timezone
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.contrib.auth.decorators import login_required
 from django.utils.functional import wraps
 from django.template.base import TemplateDoesNotExist
@@ -18,12 +25,12 @@ from django.views.decorators.csrf import csrf_exempt
 from django.core.cache import cache
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
+from django.core.urlresolvers import reverse
+from django.core.files import File
+from django.core.files.temp import NamedTemporaryFile
 
 from jsonview.decorators import json_view
-from funfactory.urlresolvers import reverse
-import xmltodict
 from sorl.thumbnail import get_thumbnail
-from PIL import Image
 
 from airmozilla.manage import vidly
 from airmozilla.base.utils import get_base_url, prepare_vidly_video_url
@@ -36,13 +43,15 @@ from airmozilla.main.models import (
     Channel,
     Approval,
     get_profile_safely,
+    Tag,
 )
 from airmozilla.comments.models import Discussion
 from airmozilla.uploads.models import Upload
 from airmozilla.manage import videoinfo
-from airmozilla.base.helpers import show_duration
+from airmozilla.base.templatetags.jinja_helpers import show_duration
 from airmozilla.base.utils import simplify_form_errors
 from airmozilla.manage import sending
+from airmozilla.base import youtube
 from . import forms
 
 
@@ -79,7 +88,9 @@ def must_be_your_event(f):
 
 @login_required
 def home(request):
-    context = {}
+    context = {
+        'has_youtube_api_key': bool(settings.YOUTUBE_API_KEY),
+    }
     request.show_sidebar = False
     return render(request, 'new/home.html', context)
 
@@ -223,12 +234,17 @@ def serialize_event(event, extended=False):
                 'group_name': approval.group.name,
             })
 
-    if event.picture:
+    if event.placeholder_img or event.picture:
         geometry = '160x90'
         crop = 'center'
-        thumb = get_thumbnail(
-            event.picture.file, geometry, crop=crop
-        )
+        if event.picture:
+            thumb = get_thumbnail(
+                event.picture.file, geometry, crop=crop
+            )
+        else:
+            thumb = get_thumbnail(
+                event.placeholder_img, geometry, crop=crop
+            )
         data['picture'] = {
             'url': thumb.url,
             'width': thumb.width,
@@ -240,6 +256,12 @@ def serialize_event(event, extended=False):
             'url': event.upload.url,
             'mime_type': event.upload.mime_type,
         }
+    elif (
+        'youtube' in event.template.name.lower() and
+        event.template_environment.get('id')
+    ):
+        data['upload'] = None
+        data['youtube_id'] = event.template_environment['id']
 
     return data
 
@@ -599,47 +621,50 @@ def event_publish(request, event):
     if event.status != Event.STATUS_INITIATED:
         return http.HttpResponseBadRequest("Not in an initiated state")
 
-    # there has to be a Vid.ly video
-    tag = event.template_environment['tag']
-    submission = None
-    qs = VidlySubmission.objects.filter(event=event, tag=tag)
-    for each in qs.order_by('-submission_time'):
-        submission = each
-        break
-    assert submission, "Event has no vidly submission"
-
     groups = []
 
     with transaction.atomic():
-        results = vidly.query(tag).get(tag, {})
-        # Let's check the privacy/tokenization of the video.
-        # What matters (source of truth) is the event's privacy state.
-        if event.privacy != Event.PRIVACY_PUBLIC and results:
-            # make sure the submission the the video IS token protected
-            if not submission.token_protection:
-                submission.token_protection = True
-                submission.save()
-            if results['Private'] == 'false':
-                # We can only do this if the video has been successfully
-                # transcoded.
-                if results['Status'] == 'Finished':
-                    vidly.update_media_protection(
-                        tag,
-                        True
-                    )
-        if results.get('Status') == 'Finished':
+        # there has to be a Vid.ly video
+        if 'youtube' in event.template.name.lower():
             event.status = Event.STATUS_SCHEDULED
-            # If it's definitely finished, it means we managed to ask
-            # Vid.ly this question before Vid.ly had a chance to ping
-            # us on the webhook. Might as well set it now.
-            if not event.archive_time:
-                event.archive_time = timezone.now()
         else:
-            # vidly hasn't finished processing it yet
-            event.status = Event.STATUS_PENDING
+            tag = event.template_environment['tag']
+            submission = None
+            qs = VidlySubmission.objects.filter(event=event, tag=tag)
+            for each in qs.order_by('-submission_time'):
+                submission = each
+                break
+            assert submission, "Event has no vidly submission"
+
+            results = vidly.query(tag).get(tag, {})
+            # Let's check the privacy/tokenization of the video.
+            # What matters (source of truth) is the event's privacy state.
+            if event.privacy != Event.PRIVACY_PUBLIC and results:
+                # make sure the submission the the video IS token protected
+                if not submission.token_protection:
+                    submission.token_protection = True
+                    submission.save()
+                if results['Private'] == 'false':
+                    # We can only do this if the video has been successfully
+                    # transcoded.
+                    if results['Status'] == 'Finished':
+                        vidly.update_media_protection(
+                            tag,
+                            True
+                        )
+            if results.get('Status') == 'Finished':
+                event.status = Event.STATUS_SCHEDULED
+                # If it's definitely finished, it means we managed to ask
+                # Vid.ly this question before Vid.ly had a chance to ping
+                # us on the webhook. Might as well set it now.
+                if not event.archive_time:
+                    event.archive_time = timezone.now()
+            else:
+                # vidly hasn't finished processing it yet
+                event.status = Event.STATUS_PENDING
         event.save()
 
-        if not event.picture:
+        if not event.picture and not event.placeholder_img:
             # assign the default placeholder picture if there is one
             try:
                 event.picture = Picture.objects.get(default_placeholder=True)
@@ -717,7 +742,9 @@ def your_events(request):
         Event.objects.filter(
             creator=request.user,
             status=Event.STATUS_INITIATED,
-            upload__isnull=False,
+        )
+        .filter(
+            Q(upload__isnull=False) | Q(template__name__icontains='YouTube')
         )
         .select_related('upload', 'picture')
         .order_by('-created')
@@ -736,17 +763,23 @@ def your_events(request):
     serialized = []
     for event in events:
         upload = event.upload
-        upload = {
-            'size': upload.size,
-            'mime_type': upload.mime_type
-        }
+        if upload:
+            upload = {
+                'size': upload.size,
+                'mime_type': upload.mime_type
+            }
         thumbnail = None
-        if event.picture:
+        if event.picture or event.placeholder_img:
             geometry = '160x90'
             crop = 'center'
-            thumb = get_thumbnail(
-                event.picture.file, geometry, crop=crop
-            )
+            if event.picture:
+                thumb = get_thumbnail(
+                    event.picture.file, geometry, crop=crop
+                )
+            else:
+                thumb = get_thumbnail(
+                    event.placeholder_img, geometry, crop=crop
+                )
             thumbnail = {
                 'url': thumb.url,
                 'width': thumb.width,
@@ -777,6 +810,7 @@ def event_delete(request, event):
 @transaction.atomic
 def unsubscribe(request, identifier):
     context = {}
+
     cache_key = 'unsubscribe-%s' % identifier
 
     user_id = cache.get(cache_key)
@@ -785,7 +819,7 @@ def unsubscribe(request, identifier):
     else:
         user = None
         cache.set(cache_key, request.user.id, 60)
-    context['user'] = user
+    context['user_'] = user
 
     if request.method == 'POST':
         if not user:
@@ -818,7 +852,7 @@ def event_pictures_rotate(request, event):
     for picture in Picture.objects.filter(event=event):
         img = Image.open(picture.file.path)
         format = picture.file.name.lower().endswith('.png') and 'png' or 'jpeg'
-        img = img.rotate(direction == 'left' and 90 or 270)
+        img = img.rotate(direction == 'left' and 90 or 270, expand=True)
         f = StringIO()
         try:
             img.save(f, format=format)
@@ -829,3 +863,109 @@ def event_pictures_rotate(request, event):
         finally:
             f.close()
     return True
+
+
+@login_required
+@json_view
+def youtube_extract(request):
+    url = request.GET.get('url')
+    if not url:
+        return http.HttpResponseBadRequest('No url')
+    try:
+        return youtube.extract_metadata_by_url(url)
+    except ValueError:
+        return {'error': 'Video ID not found by that URL'}
+    except youtube.VideoNotFound as ex:
+        return {'error': 'No video by that ID could be found (%s)' % ex}
+
+
+@require_POST
+@login_required
+@json_view
+@transaction.atomic
+def youtube_create(request):
+    try:
+        body = json.loads(request.body)
+    except ValueError:
+        # it wasn't sent as a JSON request body
+        return http.HttpResponseBadRequest('Missing JSON request body')
+    if not body.get('id'):
+        return http.HttpResponseBadRequest('Missing id')
+
+    # extract all the details again
+    data = youtube.extract_metadata_by_id(body['id'])
+
+    for template in Template.objects.filter(name__icontains='YouTube'):
+        break
+    else:
+        template = Template.objects.create(
+            name='YouTube',
+            content=(
+                '<iframe width="896" height="504" src="https://www.youtube-noc'
+                'ookie.com/embed/{{ id }}?rel=0&amp;showinfo=0" '
+                'frameborder="0" allowfullscreen></iframe>'
+            )
+        )
+
+    youtube_url = 'https://www.youtube.com/watch?v=' + data['id']
+    additional_links = u'On YouTube™ {}'.format(youtube_url)
+
+    event = Event.objects.create(
+        title=data['title'],
+        description=data['description'],
+        template=template,
+        template_environment={'id': data['id']},
+        creator=request.user,
+        status=Event.STATUS_INITIATED,
+        privacy=Event.PRIVACY_PUBLIC,
+        start_time=timezone.now(),
+        additional_links=additional_links,
+        archive_time=timezone.now(),
+    )
+    img_temp = NamedTemporaryFile(delete=True)
+    img_temp.write(requests.get(data['thumbnail_url']).content)
+    img_temp.flush()
+    event.placeholder_img.save(
+        os.path.basename(data['thumbnail_url']),
+        File(img_temp)
+    )
+    for tag in data['tags']:
+        try:
+            event.tags.add(Tag.objects.get(name__iexact=tag))
+        except Tag.DoesNotExist:
+            event.tags.add(Tag.objects.create(name=tag))
+
+    # first get the parent of all YouTube channels
+    youtube_parent, __ = Channel.objects.get_or_create(
+        name=u'YouTube™',
+        slug='youtube',
+        never_show=True,
+    )
+    try:
+        channel = Channel.objects.get(
+            parent=youtube_parent,
+            youtube_id=data['channel']['id'],
+            name=data['channel']['title'],
+        )
+    except Channel.DoesNotExist:
+        channel = Channel.objects.create(
+            parent=youtube_parent,
+            youtube_id=data['channel']['id'],
+            name=data['channel']['title'],
+            slug=slugify(data['channel']['title'])
+        )
+        if data['channel']['thumbnail_url']:
+            img_temp = NamedTemporaryFile(delete=True)
+            img_temp.write(
+                requests.get(data['channel']['thumbnail_url']).content
+            )
+            img_temp.flush()
+            channel.image.save(
+                os.path.basename(data['channel']['thumbnail_url']),
+                File(img_temp)
+            )
+    event.channels.add(channel)
+    # also put it in the other default channels
+    for channel in Channel.objects.filter(default=True):
+        event.channels.add(channel)
+    return serialize_event(event)

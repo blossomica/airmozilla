@@ -1,6 +1,7 @@
 from django.contrib.auth.models import User
+from django.core.urlresolvers import reverse
+from django.utils.encoding import smart_text
 
-from funfactory.urlresolvers import reverse
 from nose.tools import eq_, ok_
 
 from airmozilla.main.models import Event, EventOldSlug
@@ -24,23 +25,26 @@ class TestEventDiscussion(DjangoTestCase):
         user = self._login()
         response = self.client.get(event_url)
         eq_(response.status_code, 200)
+        response_content = response.content.decode('utf-8')
         # still not!
-        ok_(url not in response.content)
-        ok_(edit_url in response.content)
+        ok_(url not in response_content)
+        ok_(edit_url in response_content)
 
         event.creator = user
         event.save()
         response = self.client.get(event_url)
         eq_(response.status_code, 200)
+        response_content = response.content.decode('utf-8')
         # still not because there's no discussion set up
-        ok_(url not in response.content)
-        ok_(edit_url in response.content)
+        ok_(url not in response_content)
+        ok_(edit_url in response_content)
 
         Discussion.objects.create(event=event)
         response = self.client.get(event_url)
         eq_(response.status_code, 200)
-        ok_(url in response.content)
-        ok_(edit_url in response.content)
+        response_content = response.content.decode('utf-8')
+        ok_(url in response_content)
+        ok_(edit_url in response_content)
 
     def test_permission_access(self):
         event = Event.objects.get(title='Test event')
@@ -81,7 +85,7 @@ class TestEventDiscussion(DjangoTestCase):
         response = self.client.get(url)
         eq_(response.status_code, 200)
         emails = [user.email, 'richard@example.com']
-        ok_(', '.join(emails) in response.content)
+        ok_(', '.join(emails) in smart_text(response.content))
 
         # Now let's try to post something to it
         data = {

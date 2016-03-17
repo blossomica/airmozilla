@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 import re
 import os
 import datetime
@@ -9,8 +11,8 @@ from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
 from django.core.files import File
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
+from django.contrib.auth.models import User
 
 from airmozilla.main.models import (
     Approval,
@@ -19,6 +21,7 @@ from airmozilla.main.models import (
     Template,
     Tag,
 )
+from airmozilla.search.models import SavedSearch
 from airmozilla.base.tests.testbase import DjangoTestCase
 
 
@@ -50,7 +53,7 @@ class TestFeeds(DjangoTestCase):
         )
 
         self.patch_get_thumbnail = mock.patch(
-            'airmozilla.main.helpers.get_thumbnail'
+            'airmozilla.main.templatetags.jinja_helpers.get_thumbnail'
         )
         mocked_get_thumbnail = self.patch_get_thumbnail.start()
 
@@ -112,6 +115,91 @@ class TestFeeds(DjangoTestCase):
         eq_(response.status_code, 200)
         ok_('Test event' in response.content)
         ok_('Second test event' in response.content)
+
+    def test_feed_with_NOT_channel(self):
+        cache.clear()
+        delay = datetime.timedelta(days=1)
+
+        event1 = Event.objects.get(title='Test event')
+        event1.status = Event.STATUS_SCHEDULED
+        event1.start_time -= delay
+        event1.archive_time = event1.start_time
+        event1.save()
+        eq_(Event.objects.archived().approved().count(), 1)
+        eq_(Event.objects.archived().count(), 1)
+
+        event = Event.objects.create(
+            title='Second test event',
+            description='Anything',
+            start_time=event1.start_time,
+            archive_time=event1.archive_time,
+            privacy=event1.privacy,
+            status=event1.status,
+            placeholder_img=event1.placeholder_img,
+        )
+        event.channels.add(self.main_channel)
+
+        eq_(Event.objects.archived().approved().count(), 2)
+        eq_(Event.objects.archived().count(), 2)
+
+        url = reverse('main:feed', args=('public',))
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('Test event' in response.content)
+        ok_('Second test event' in response.content)
+
+        channel = Channel.objects.create(
+            name='Projects',
+            slug='projects',
+        )
+        event1.channels.add(channel)
+
+        url = reverse('main:not_feed', args=('public', 'xxx'))
+        response = self.client.get(url)
+        eq_(response.status_code, 404)
+
+        url = reverse('main:not_feed', args=('public', 'projects'))
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('Test event' not in response.content)
+        ok_('Second test event' in response.content)
+
+    def test_feed_non_unique_titles(self):
+        event = Event.objects.get(title='Test event')
+        assert event.status == Event.STATUS_SCHEDULED
+        assert event.privacy == Event.PRIVACY_PUBLIC
+        assert event.start_time
+        event.title = u'Färjreföx'
+        event.archive_time = timezone.now()
+        event.save()
+
+        # use a different channel to avoid getting caught in page ccaching
+        channel = Channel.objects.create(
+            name='Stuff', slug='stuff'
+        )
+        event.channels.add(channel)
+        # create a clone
+        other_event = Event.objects.create(
+            title=event.title,
+            slug='different',
+            privacy=event.privacy,
+            start_time=event.start_time - datetime.timedelta(days=2),
+            archive_time=timezone.now(),
+            template_environment=event.template_environment,
+            template=event.template,
+            status=event.status,
+        )
+        other_event.channels.add(channel)
+
+        url = reverse('main:channel_feed_default', args=('stuff',))
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        assert response.content.count('<item>') == 2
+        title_regex = re.compile('<title>(.*?)</title>')
+        _, item_title1, item_title2 = title_regex.findall(response.content)
+        # Because they're non-unique they should have been separated
+        # with the events' `get_unique_title()` method.
+        ok_(item_title1 != item_title2)
 
     def test_feed_unapproved_events(self):
         event = Event.objects.get(title='Test event')
@@ -183,6 +271,32 @@ class TestFeeds(DjangoTestCase):
             '<link>https://vid.ly/abc123?content=video&amp;format=webm</link>'
             in response.content
         )
+
+    def test_feed_with_savedsearch(self):
+        url = reverse('main:feed')
+        response = self.client.get(url)
+        ok_('Test event' in response.content)
+
+        savedsearch = SavedSearch.objects.create(
+            user=User.objects.create(username='richard'),
+            filters={
+                'title': {
+                    'include': 'FLY'
+                }
+            }
+        )
+
+        response = self.client.get(url, {'ss': savedsearch.id})
+        ok_('Test event' not in response.content)
+        event = Event.objects.get(title='Test event')
+        event.title = 'Flying to the Moon'
+        event.save()
+        response = self.client.get(url, {'ss': savedsearch.id})
+        ok_('Flying to the Moon' not in response.content)
+        # because the feed is cached
+        cache.clear()
+        response = self.client.get(url, {'ss': savedsearch.id})
+        ok_('Flying to the Moon' in response.content)
 
     def test_feed_cache(self):
         delay = datetime.timedelta(days=1)
@@ -363,7 +477,7 @@ class TestFeeds(DjangoTestCase):
         ok_('<title>Air Mozilla' not in response.content)
         ok_('<title>Rust on Air Mozilla' in response.content)
 
-    @mock.patch('airmozilla.manage.vidly.get_video_redirect_info')
+    @mock.patch('airmozilla.main.models.get_video_redirect_info')
     def test_itunes_feed_item(self, r_get_redirect_info):
 
         def mocked_get_redirect_info(tag, format_, hd=False, expires=60):
@@ -403,7 +517,7 @@ class TestFeeds(DjangoTestCase):
         ok_('<itunes:duration>01:01:01</itunes:duration>' in xml_)
         ok_('<itunes:keywords>Tag1,Tag2</itunes:keywords>' in xml_)
 
-    @mock.patch('airmozilla.manage.vidly.get_video_redirect_info')
+    @mock.patch('airmozilla.main.models.get_video_redirect_info')
     def test_itunes_feed_from_sub_channel(self, r_get_redirect_info):
 
         def mocked_get_redirect_info(tag, format_, hd=False, expires=60):
@@ -436,7 +550,56 @@ class TestFeeds(DjangoTestCase):
         url = reverse('main:itunes_feed', args=('events',))
         response = self.client.get(url)
         eq_(response.status_code, 200)
-        # print response.content
         assert '<item>' in response.content
         xml_ = response.content.split('<item>')[1].split('</item>')[0]
         ok_(event.title in xml_)
+
+    @mock.patch('airmozilla.main.models.get_video_redirect_info')
+    def test_itunes_feed_with_repeated_titles(self, r_get_redirect_info):
+
+        def mocked_get_redirect_info(tag, format_, hd=False, expires=60):
+            return {
+                'url': 'http://cdn.vidly/file.mp4',
+                'type': 'video/mp4',
+                'length': '1234567',
+            }
+
+        r_get_redirect_info.side_effect = mocked_get_redirect_info
+
+        event = Event.objects.get(title='Test event')
+        event.title = u'Nånting på svenska'
+        event.save()
+        event.archive_time = timezone.now()
+        event.template_environment = {'tag': 'abc123'}
+        event.duration = 60
+        event.save()
+        event.template.name = 'Vid.ly something'
+        event.template.save()
+        assert event in Event.objects.archived()
+        assert event.channels.filter(slug=settings.DEFAULT_CHANNEL_SLUG)
+
+        # now create a clone with the same title
+        other_event = Event.objects.create(
+            title=event.title,
+            slug='other',
+            start_time=event.start_time - datetime.timedelta(days=2),
+            archive_time=timezone.now(),
+            template_environment=event.template_environment,
+            template=event.template,
+            privacy=event.privacy,
+            status=event.status,
+            duration=event.duration,
+        )
+        for channel in event.channels.all():
+            other_event.channels.add(channel)
+        assert other_event in Event.objects.archived()
+
+        url = reverse('main:itunes_feed')
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        assert response.content.count('<item>') == 2
+        title_regex = re.compile('<title>(.*?)</title>')
+        _, item_title1, item_title2 = title_regex.findall(response.content)
+        # Because they're non-unique they should have been separated
+        # with the events' `get_unique_title()` method.
+        ok_(item_title1 != item_title2)

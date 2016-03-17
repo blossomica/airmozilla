@@ -1,0 +1,52 @@
+{% extends 'manage/surveys.html' %}
+
+{% block manage_title %}
+    Edit Survey "{{ survey.name }}"
+{% endblock %}
+
+{% block site_css %}
+  {{ super() }}
+  {% stylesheet 'select2' %}
+  {% stylesheet 'select2_bootstrap' %}
+  {% stylesheet 'survey' %}
+{% endblock %}
+
+{% block site_js %}
+  {{ super() }}
+  <script src="{{ static('select2/select2.min.js') }}"></script>
+  {% javascript 'survey_edit' %}
+{% endblock %}
+
+{% block content_class %}col-md-6{% endblock %}
+
+{% block manage_content %}
+
+    <h3>Survey data</h3>
+    {% include "manage/_default_form.html" %}
+
+    <h3>Questions</h3>
+    <p class="survey-link">
+      <a href="{{ url('manage:survey_questions', survey.id) }}">Edit questions here</a>
+    </p>
+
+    {% for question in questions %}
+      <div>
+        <pre class="question">{{ json_print(question.question, indent=2) }}</pre>
+      </div>
+    {% endfor %}
+
+    <h3>Events that use this survey</h3>
+    <ul>
+      {% for event in events_using %}
+      <li>
+        <a href="{{ url('manage:event_edit', event.pk) }}">{{ event.title }}</a>
+        (<a href="{{ url('main:event', event.slug) }}">view</a>)
+      </li>
+      {% endfor %}
+    </ul>
+
+    {% if not events_using %}
+      <p><em>None</em></p>
+    {% endif %}
+
+{% endblock %}

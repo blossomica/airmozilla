@@ -11,8 +11,8 @@ from django.conf import settings
 from django.contrib.auth.models import User, Group
 from django.utils.timezone import utc
 from django.utils.safestring import mark_safe
+from django.core.urlresolvers import reverse
 
-from funfactory.urlresolvers import reverse
 from slugify import slugify
 
 from airmozilla.base.forms import BaseModelForm, BaseForm
@@ -35,11 +35,13 @@ from airmozilla.main.models import (
     Picture,
     Topic,
     Chapter,
+    CuratedGroup,
 )
 from airmozilla.comments.models import Discussion, Comment
 from airmozilla.surveys.models import Question, Survey
 from airmozilla.staticpages.models import StaticPage
-from airmozilla.base.helpers import show_duration_compact
+from airmozilla.base.templatetags.jinja_helpers import show_duration_compact
+from airmozilla.main.forms import TagsModelMultipleChoiceField
 
 from .widgets import PictureWidget
 
@@ -87,7 +89,10 @@ class GroupEditForm(BaseModelForm):
 
 
 class EventRequestForm(BaseModelForm):
-    tags = forms.CharField(required=False)
+    tags = TagsModelMultipleChoiceField(
+        Tag.objects.all(),
+        required=False,
+    )
 
     class Meta:
         model = Event
@@ -117,6 +122,7 @@ class EventRequestForm(BaseModelForm):
         )
 
     def __init__(self, *args, **kwargs):
+        self.curated_groups_choices = kwargs.pop('curated_groups_choices', [])
         super(EventRequestForm, self).__init__(*args, **kwargs)
         self.fields['channels'].help_text = (
             '<a href="%s" class="btn btn-default" target="_blank">'
@@ -124,6 +130,7 @@ class EventRequestForm(BaseModelForm):
             'New channel'
             '</a>' % reverse('manage:channel_new'))
         self.fields['placeholder_img'].label = 'Placeholder image'
+        self.fields['tags'].help_text = ''
         if 'instance' in kwargs:
             event = kwargs['instance']
             approvals = event.approval_set.all()
@@ -144,25 +151,6 @@ class EventRequestForm(BaseModelForm):
                     'Since there is no location, time zone of this date '
                     ' is UTC.'
                 )
-
-            if event.pk:
-                tags_formatted = ','.join(x.name for x in event.tags.all())
-                self.initial['tags'] = tags_formatted
-
-    def clean_tags(self):
-        tags = self.cleaned_data['tags']
-        split_tags = [t.strip() for t in tags.split(',') if t.strip()]
-        final_tags = []
-        for tag_name in split_tags:
-            try:
-                t = Tag.objects.get(name=tag_name)
-            except Tag.DoesNotExist:
-                try:
-                    t = Tag.objects.get(name__iexact=tag_name)
-                except Tag.DoesNotExist:
-                    t = Tag.objects.create(name=tag_name)
-            final_tags.append(t)
-        return final_tags
 
     def clean_slug(self):
         """Enforce unique slug across current slugs and old slugs."""
@@ -194,17 +182,32 @@ class EventRequestForm(BaseModelForm):
         return data
 
 
+class CuratedGroupsChoiceField(forms.MultipleChoiceField):
+    """The purpose of this overridden field is so that we can create
+    CuratedGroup objects if need be.
+    """
+
+    def clean(self, value):
+        if self.event.id:
+            for name in value:
+                CuratedGroup.objects.get_or_create(
+                    event=self.event,
+                    name=name
+                )
+        return value
+
+
 class EventEditForm(EventRequestForm):
     approvals = forms.ModelMultipleChoiceField(
         queryset=Group.objects.filter(permissions__codename='change_approval'),
         required=False,
         widget=forms.CheckboxSelectMultiple()
     )
-    curated_groups = forms.CharField(
+    curated_groups = CuratedGroupsChoiceField(
         required=False,
         help_text='Curated groups only matter if the event is open to'
                   ' "%s".' % [x[1] for x in Event.PRIVACY_CHOICES
-                              if x[0] == Event.PRIVACY_CONTRIBUTORS][0]
+                              if x[0] == Event.PRIVACY_CONTRIBUTORS][0],
     )
 
     class Meta(EventRequestForm.Meta):
@@ -228,6 +231,11 @@ class EventEditForm(EventRequestForm):
 
     def __init__(self, *args, **kwargs):
         super(EventEditForm, self).__init__(*args, **kwargs)
+
+        # This is important so that the clean() method on this field
+        # can create new CuratedGroup records if need be.
+        self.fields['curated_groups'].event = self.instance
+        self.fields['curated_groups'].choices = self.curated_groups_choices
 
         if 'pin' in self.fields:
             self.fields['pin'].help_text = (
@@ -375,7 +383,7 @@ class EventTweetForm(BaseModelForm):
             )
 
         if event.placeholder_img or event.picture:
-            from airmozilla.main.helpers import thumbnail
+            from airmozilla.main.templatetags.jinja_helpers import thumbnail
             if event.picture:
                 pic = event.picture.file
             else:
@@ -394,16 +402,13 @@ class EventTweetForm(BaseModelForm):
         else:
             del self.fields['include_placeholder']
 
-        if event.location:
-            self.fields['send_date'].help_text = (
-                'Timezone is %s' % event.location.timezone
-            )
+        self.fields['send_date'].help_text = 'Timezone is UTC'
 
 
 class ChannelForm(BaseModelForm):
     class Meta:
         model = Channel
-        exclude = ('created',)
+        exclude = ('created', 'youtube_id')
 
     def __init__(self, *args, **kwargs):
         super(ChannelForm, self).__init__(*args, **kwargs)
@@ -911,6 +916,7 @@ class EventAssignmentForm(BaseModelForm):
         fields = ('locations', 'users')
 
     def __init__(self, *args, **kwargs):
+        permission_required = kwargs.pop('permission_required')
         super(EventAssignmentForm, self).__init__(*args, **kwargs)
         users = (
             User.objects
@@ -918,6 +924,7 @@ class EventAssignmentForm(BaseModelForm):
                 'email_lower': 'LOWER(email)'
             })
             .filter(is_active=True, is_staff=True)
+            .filter(groups__permissions=permission_required)
             .order_by('email_lower')
         )
 
@@ -1102,3 +1109,22 @@ class EventDurationForm(BaseModelForm):
             "Note! If you remove this value (make it blank), it will be "
             "unset and automatically be re-evaluated."
         )
+
+
+class EmailSendingForm(BaseForm):
+
+    to = forms.CharField(
+        help_text='Semi colon separated list of emails'
+    )
+    subject = forms.CharField()
+    html_body = forms.CharField(
+        label='HTML Body',
+        widget=forms.widgets.Textarea()
+    )
+
+    def clean_to(self):
+        value = self.cleaned_data['to']
+        value = [x.strip() for x in value.split(';') if x.strip()]
+        if not value:
+            raise forms.ValidationError('Email list of emails')
+        return value

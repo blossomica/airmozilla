@@ -5,8 +5,7 @@ from django.contrib import messages
 from django.shortcuts import render, redirect, get_object_or_404
 from django.utils import timezone
 from django.db import transaction
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import (
     Event,
@@ -52,6 +51,11 @@ def suggestion_review(request, id):
     comment_form = forms.SuggestedEventCommentForm()
 
     if request.method == 'POST':
+
+        if request.POST.get('unbounce'):
+            event.submitted = timezone.now()
+            event.save()
+            return redirect('manage:suggestion_review', event.pk)
 
         if not event.submitted:
             return http.HttpResponseBadRequest('Not submitted')
@@ -113,12 +117,9 @@ def suggestion_review(request, id):
                     'channels': [x.pk for x in event.channels.all()],
                     'call_info': event.call_info,
                     'privacy': event.privacy,
-                    'popcorn_url': event.popcorn_url,
                     'estimated_duration': event.estimated_duration,
                     'topics': [x.pk for x in event.topics.all()],
                 }
-                if dict_event['popcorn_url'] == 'https://':
-                    dict_event['popcorn_url'] = ''
                 real_event_form = forms.EventRequestForm(
                     data=dict_event,
                 )
@@ -131,29 +132,24 @@ def suggestion_review(request, id):
                     real.additional_links = event.additional_links
                     real.remote_presenters = event.remote_presenters
                     real.creator = request.user
-                    if real.popcorn_url and not event.upcoming:
-                        real.archive_time = real.start_time
-                    if event.upcoming:
-                        real.status = Event.STATUS_SUBMITTED
-                        # perhaps we have a default location template
-                        # environment
-                        if real.location:
-                            try:
-                                default = (
-                                    LocationDefaultEnvironment.objects
-                                    .get(
-                                        location=real.location,
-                                        privacy=real.privacy
-                                    )
+                    real.status = Event.STATUS_SUBMITTED
+                    # perhaps we have a default location template
+                    # environment
+                    if real.location:
+                        try:
+                            default = (
+                                LocationDefaultEnvironment.objects
+                                .get(
+                                    location=real.location,
+                                    privacy=real.privacy
                                 )
-                                real.template = default.template
-                                real.template_environment = (
-                                    default.template_environment
-                                )
-                            except LocationDefaultEnvironment.DoesNotExist:
-                                pass
-                    else:
-                        real.status = Event.STATUS_PENDING
+                            )
+                            real.template = default.template
+                            real.template_environment = (
+                                default.template_environment
+                            )
+                        except LocationDefaultEnvironment.DoesNotExist:
+                            pass
                     real.save()
                     [real.tags.add(x) for x in event.tags.all()]
                     [real.channels.add(x) for x in event.channels.all()]
@@ -230,7 +226,7 @@ def suggestion_review(request, id):
     comments = (
         SuggestedEventComment.objects
         .filter(suggested_event=event)
-        .select_related('User')
+        .select_related('user')
         .order_by('created')
     )
 

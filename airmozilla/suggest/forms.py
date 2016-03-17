@@ -1,10 +1,10 @@
 from django import forms
 from django.conf import settings
 from django.db.models import Q
+from django.core.urlresolvers import reverse
+from django.contrib.auth.models import User
 
 from slugify import slugify
-import requests
-from funfactory.urlresolvers import reverse
 
 from airmozilla.base.forms import BaseModelForm, GallerySelect
 from airmozilla.main.models import (
@@ -15,19 +15,11 @@ from airmozilla.main.models import (
     SuggestedEventComment
 )
 from airmozilla.comments.models import SuggestedDiscussion
+from airmozilla.main.forms import TagsModelMultipleChoiceField
 from . import utils
 
 
 class StartForm(BaseModelForm):
-
-    event_type = forms.ChoiceField(
-        label='What kind of event is this?',
-        choices=[
-            ('upcoming', 'Upcoming'),
-            ('popcorn', 'Popcorn')
-        ],
-        widget=forms.widgets.RadioSelect()
-    )
 
     class Meta:
         model = SuggestedEvent
@@ -61,26 +53,6 @@ class TitleForm(BaseModelForm):
         return cleaned_data
 
 
-class PopcornForm(BaseModelForm):
-
-    class Meta:
-        model = SuggestedEvent
-        fields = ('popcorn_url',)
-
-    def __init__(self, *args, **kwargs):
-        super(PopcornForm, self).__init__(*args, **kwargs)
-        self.fields['popcorn_url'].label = 'Popcorn URL'
-
-    def clean_popcorn_url(self):
-        url = self.cleaned_data['popcorn_url']
-        if '://' not in url:
-            url = 'http://' + url
-        response = requests.get(url)
-        if response.status_code != 200:
-            raise forms.ValidationError('URL can not be found')
-        return url
-
-
 class DescriptionForm(BaseModelForm):
 
     class Meta:
@@ -110,7 +82,10 @@ class DescriptionForm(BaseModelForm):
 
 class DetailsForm(BaseModelForm):
 
-    tags = forms.CharField(required=False)
+    tags = TagsModelMultipleChoiceField(
+        Tag.objects.all(),
+        required=False,
+    )
 
     enable_discussion = forms.BooleanField(required=False)
 
@@ -137,7 +112,11 @@ class DetailsForm(BaseModelForm):
         }
 
     def __init__(self, *args, **kwargs):
+        no_tag_choices = kwargs.pop('no_tag_choices', None)
         super(DetailsForm, self).__init__(*args, **kwargs)
+
+        if no_tag_choices:
+            self.fields['tags'].queryset = self.instance.tags.all()
         self.fields['channels'].required = False
         self.fields['channels'].queryset = (
             Channel.objects
@@ -151,32 +130,26 @@ class DetailsForm(BaseModelForm):
         self.fields['topics'].label = 'Topics (if any)'
         self.fields['topics'].required = False
 
-        if not self.instance.upcoming:
-            del self.fields['location']
-            del self.fields['start_time']
-            del self.fields['remote_presenters']
-            del self.fields['call_info']
-        else:
-            self.fields['location'].required = True
-            self.fields['start_time'].required = True
-            self.fields['location'].help_text = (
-                "Choose an Air Mozilla origination point. &lt;br&gt;"
-                "If the location of your event isn't on the list, "
-                "choose Live Remote.  &lt;br&gt;"
-                "Note that live remote dates and times are UTC."
-            )
-            self.fields['remote_presenters'].help_text = (
-                "If there will be presenters who present remotely, please "
-                "enter email addresses, names and locations about these "
-                "presenters."
-            )
-            self.fields['remote_presenters'].widget.attrs['rows'] = 3
-            self.fields['call_info'].widget = forms.widgets.TextInput()
-            self.fields['call_info'].label = 'Vidyo room (if any)'
-            self.fields['call_info'].help_text = (
-                "If you're using a Vidyo room, which one?&lt;br&gt;"
-                "Required for Cyberspace events."
-            )
+        self.fields['location'].required = True
+        self.fields['start_time'].required = True
+        self.fields['location'].help_text = (
+            "Choose an Air Mozilla origination point. &lt;br&gt;"
+            "If the location of your event isn't on the list, "
+            "choose Live Remote.  &lt;br&gt;"
+            "Note that live remote dates and times are UTC."
+        )
+        self.fields['remote_presenters'].help_text = (
+            "If there will be presenters who present remotely, please "
+            "enter email addresses, names and locations about these "
+            "presenters."
+        )
+        self.fields['remote_presenters'].widget.attrs['rows'] = 3
+        self.fields['call_info'].widget = forms.widgets.TextInput()
+        self.fields['call_info'].label = 'Vidyo room (if any)'
+        self.fields['call_info'].help_text = (
+            "If you're using a Vidyo room, which one?&lt;br&gt;"
+            "Required for Cyberspace events."
+        )
 
         # The list of available locations should only be those that are
         # still active. However, if you have a previously chosen location
@@ -184,12 +157,8 @@ class DetailsForm(BaseModelForm):
         location_field_q = Q(is_active=True)
         if 'instance' in kwargs:
             event = kwargs['instance']
-            if event.pk:
-                tags_formatted = ','.join(x.name for x in event.tags.all())
-                self.initial['tags'] = tags_formatted
-
-                if event.location:
-                    location_field_q |= Q(pk=event.location.pk)
+            if event.pk and event.location:
+                location_field_q |= Q(pk=event.location.pk)
         if 'location' in self.fields:
             self.fields['location'].queryset = (
                 self.fields['location'].queryset.filter(location_field_q)
@@ -212,15 +181,6 @@ class DetailsForm(BaseModelForm):
 
         self.fields['additional_links'].widget.attrs['rows'] = 3
 
-    def clean_tags(self):
-        tags = self.cleaned_data['tags']
-        split_tags = [t.strip() for t in tags.split(',') if t.strip()]
-        final_tags = []
-        for tag_name in split_tags:
-            t, __ = Tag.objects.get_or_create(name=tag_name)
-            final_tags.append(t)
-        return final_tags
-
     def clean_channels(self):
         channels = self.cleaned_data['channels']
         if not channels:
@@ -228,16 +188,53 @@ class DetailsForm(BaseModelForm):
         return channels
 
 
+class EmailsMultipleChoiceField(forms.MultipleChoiceField):
+
+    def clean(self, value):
+        emails = []
+        dups = set()
+        for email in value:
+            email = email.strip()
+            if email.lower() in dups:
+                continue
+            dups.add(email.lower())
+            if not email:
+                continue
+            if not utils.is_valid_email(email):
+                raise forms.ValidationError(
+                    '%s is not a valid email address' % (email,)
+                )
+            try:
+                user = User.objects.get(email__iexact=email)
+            except User.DoesNotExist:
+                continue
+            emails.append(user.email)
+        return super(EmailsMultipleChoiceField, self).clean(emails)
+
+
 class DiscussionForm(BaseModelForm):
 
-    emails = forms.CharField(required=False, label="Moderators")
+    emails = EmailsMultipleChoiceField(
+        required=False,
+    )
 
     class Meta:
         model = SuggestedDiscussion
         fields = ('enabled', 'moderate_all')
 
     def __init__(self, *args, **kwargs):
+        all_emails = kwargs.pop('all_emails', False)
         super(DiscussionForm, self).__init__(*args, **kwargs)
+        if all_emails:
+            self.fields['emails'].choices = [
+                (x.email, x.email)
+                for x in User.objects.filter(is_active=True)
+            ]
+        else:
+            self.fields['emails'].choices = [
+                (x.email, x.email)
+                for x in self.instance.moderators.all()
+            ]
         self.fields['moderate_all'].help_text = (
             'That every comment has to be approved before being shown '
             'publically. '
@@ -247,10 +244,7 @@ class DiscussionForm(BaseModelForm):
         })
 
     def clean_emails(self):
-        value = self.cleaned_data['emails']
-        emails = list(set([
-            x.lower().strip() for x in value.split(',') if x.strip()
-        ]))
+        emails = self.cleaned_data['emails']
         for email in emails:
             if not utils.is_valid_email(email):
                 raise forms.ValidationError(

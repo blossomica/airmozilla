@@ -1,0 +1,105 @@
+{% extends "manage/manage_base.html" %}
+{% set page = "related_content" %}
+
+{% block manage_title %}
+  Related Content
+{% endblock %}
+
+{% block site_css %}
+  {{ super() }}
+  <style type="text/css">
+  span.stopword { color: #ccc; }
+  span.match { color: #feabab; }
+  #id_event {
+      width: 500px;
+  }
+  input[type="number"] {
+      width: 100px;
+  }
+  pre.explanation { display: none; }
+  </style>
+{% endblock %}
+
+
+{% block site_js %}
+  {{ super() }}
+  {% javascript 'related_content_testing' %}
+{% endblock %}
+
+
+{% block manage_content %}
+
+<h4 style="position: absolute; right: 20px; top: 20px">
+  <a href="{{ url('manage:related_content') }}">Related Content Indexing</a>
+</h4>
+
+<form method="get" class="form-horizontal" role="form">
+  {{ bootstrapform_horizontal(form) }}
+  <div>
+    <button type="submit" class="btn btn-primary submit">List Matches</button>
+  </div>
+</form>
+
+{% if event %}
+<hr>
+<h4>Matches</h4>
+<table class="table">
+  <thead>
+    <tr>
+      <th>&nbsp;</th>
+      <th>Title (without <abbr title="'Stop words' are words like 'the', 'is', 'this', 'a', ...">stop words</abbr>):</th>
+      <th><abbr title="According to ElasticSearch">Score</abbr></th>
+      <th>Tags:</th>
+      <th>Channels:</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>This Event</th>
+      <td><a href="{{ url('manage:event_edit', event.id) }}">{{ highlight_stopwords(event.title) }}</a></td>
+      <td>-</td>
+      <td>
+        {% for tag in event.tags.all() %}
+          <span class="label label-default">{{ tag.name }}</span>
+        {% endfor %}
+      </td>
+      <td>
+        {% for channel in event.channels.all() %}
+          <a href="{{ url('main:home_channels', channel.slug) }}">{{ channel.name }}</a>
+        {% endfor %}
+      </td>
+    </tr>
+    {% set base_event = event %}
+    {% for event in matches %}
+    <tr>
+      <th>
+        Match {{ loop.index }}
+        <a href="#" class="expander" data-index="{{ loop.index }}">
+          <i class="glyphicon glyphicon-expand"></i>
+          <i class="glyphicon glyphicon-unchecked" style="display:none"></i>
+        </a>
+      </th>
+      <td><a href="{{ url('manage:event_edit', event.id) }}">{{ highlight_matches(event.title, base_event.title) }}</a></td>
+      <td>{{ scores.get(event.id) }}</td>
+      <td>
+        {% for tag in event.tags.all() %}
+          <span class="label label-default">{{ tag.name }}</span>
+        {% endfor %}
+      </td>
+      <td>
+        {% for channel in event.channels.all() %}
+          <a href="{{ url('main:home_channels', channel.slug) }}">{{ channel.name }}</a>
+        {% endfor %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% for explanation in explanations %}
+<pre class="explanation explanation-{{ loop.index }}">{{ json_print(explanation, 2) }}</pre>
+{% endfor %}
+
+{% endif %}
+
+{% endblock %}

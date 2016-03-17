@@ -9,7 +9,6 @@ from cStringIO import StringIO
 
 import mock
 from nose.tools import eq_, ok_
-from funfactory.urlresolvers import reverse
 from PIL import Image
 
 from django.contrib.auth.models import Group, Permission, User
@@ -17,6 +16,7 @@ from django.conf import settings
 from django.core.files import File
 from django.utils import timezone
 from django.core import mail
+from django.core.urlresolvers import reverse
 
 from airmozilla.base.tests.testbase import DjangoTestCase, Response
 from airmozilla.main.models import (
@@ -34,6 +34,13 @@ from airmozilla.manage.tests.views.test_vidlymedia import (
     get_custom_XML,
     SAMPLE_MEDIA_RESULT_SUCCESS
 )
+
+
+def almost_eq_(one, two, delta):
+    if isinstance(delta, int):
+        ok_(abs(one - two) <= delta, '%r !~= %r' % (one, two))
+    else:
+        raise NotImplementedError(delta)
 
 
 class TestNew(DjangoTestCase):
@@ -55,6 +62,36 @@ class TestNew(DjangoTestCase):
         assert event.upload
         return event
 
+    def _create_youtube_event(self, id=None, user=None):
+        user = user or self._login()
+        event = Event.objects.create(
+            creator=user,
+            title='Automatically Set',
+            template_environment={'id': id},
+            start_time=timezone.now(),
+            archive_time=timezone.now(),
+            status=Event.STATUS_INITIATED,
+        )
+        template, __ = Template.objects.get_or_create(
+            name='YouTube',
+            content='<iframe src="//youtube.com/{{id}}"></iframe>'
+        )
+        event.template = template
+        event.save()
+        self._attach_file(event, self.sample_jpg)
+
+        parent, __ = Channel.objects.get_or_create(
+            name='YouTube',
+            slug='youtube'
+        )
+        channel, __ = Channel.objects.get_or_create(
+            parent=parent,
+            name='PyCon 2019',
+            slug='pycon-2019',
+            youtube_id='x1c2v3b4n5m6'
+        )
+        return event
+
     def _create_default_archive_template(self):
         try:
             return Template.objects.get(default_archive_template=True)
@@ -63,6 +100,17 @@ class TestNew(DjangoTestCase):
                 name='Vid.ly Default',
                 default_archive_template=True,
                 content='<script src="{{ tag}}"></script>'
+            )
+
+    def _create_youtube_template(self):
+        try:
+            return Template.objects.get(name='YouTube')
+        except Template.DoesNotExist:
+            return Template.objects.create(
+                name='YouTube',
+                content=(
+                    '<iframe src="//youtube.com/{{id}}"></iframe>'
+                )
             )
 
     def _create_approval_group(self):
@@ -950,6 +998,7 @@ class TestNew(DjangoTestCase):
         eq_(json.loads(response.content), True)
         picture = Picture.objects.get(id=picture.id)
         file_after = picture.file
+
         ok_(file_before != file_after)
 
         img_after = Image.open(picture.file.path)
@@ -957,8 +1006,8 @@ class TestNew(DjangoTestCase):
         img_after.close()
 
         # numbers transposed?
-        eq_(size_before[0], size_after[1])
-        eq_(size_before[1], size_after[0])
+        almost_eq_(size_before[0], size_after[1], 2)
+        almost_eq_(size_before[1], size_after[0], 2)
 
         # rotate it back
         response = self.post_json(url, {'direction': 'left'})
@@ -971,10 +1020,11 @@ class TestNew(DjangoTestCase):
         img_after_after.close()
 
         # numbers transposed?
-        eq_(size_after[0], size_after_after[1])
-        eq_(size_after[1], size_after_after[0])
+        almost_eq_(size_after[0], size_after_after[1], 2)
+        almost_eq_(size_after[1], size_after_after[0], 2)
 
-        eq_(size_before, size_after_after)
+        almost_eq_(size_before[0], size_after_after[0], 2)
+        almost_eq_(size_before[1], size_after_after[1], 2)
 
     def test_picture_save(self):
         event = self._create_event()
@@ -1639,6 +1689,42 @@ class TestNew(DjangoTestCase):
         event = Event.objects.get(id=event.id)
         ok_(channel in event.channels.all())
 
+    @mock.patch('airmozilla.manage.vidly.urllib2')
+    def test_event_publish_youtube_video(self, p_urllib2):
+        """test publishing when the vidly submission has finished"""
+        # group, group_users = self._create_approval_group()
+
+        event = self._create_event()
+        event.template = self._create_youtube_template()
+        event.template_environment = {'id': 'abc123'}
+        event.privacy = Event.PRIVACY_PUBLIC
+        event.save()
+
+        with open(self.sample_jpg) as fp:
+            picture = Picture.objects.create(
+                event=event,
+                file=File(fp),
+            )
+        event.picture = picture
+        event.save()
+
+        assert not event.channels.all()
+
+        channel = Channel.objects.create(
+            name='Peterism',
+            slug='peter',
+            default=True
+        )
+
+        url = reverse('new:publish', args=(event.id,))
+        response = self.post_json(url)
+        eq_(response.status_code, 200)
+        eq_(json.loads(response.content), True)
+
+        event = Event.objects.get(id=event.id)
+        eq_(event.status, Event.STATUS_SCHEDULED)
+        ok_(channel in event.channels.all())
+
     def test_event_publish_bad_status(self):
         event = self._create_event()
         event.status = Event.STATUS_PENDING
@@ -1723,6 +1809,16 @@ class TestNew(DjangoTestCase):
         ok_(first['picture']['width'])
         ok_(first['picture']['height'])
 
+    def test_your_events_youtube_event(self):
+        event = self._create_youtube_event()
+        url = reverse('new:your_events')
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        events = json.loads(response.content)['events']
+        event, = events
+        ok_(event['picture'])
+        ok_(not event['upload'])
+
     def test_delete_event(self):
         event = self._create_event()
         url = reverse('new:delete', args=(event.id,))
@@ -1763,3 +1859,242 @@ class TestNew(DjangoTestCase):
         upload = Upload.objects.get(id=upload.id)
         ok_(upload.event)
         eq_(upload.event.upload, upload)
+
+    @mock.patch('airmozilla.base.youtube.build')
+    def test_youtube_extract(self, build):
+
+        def mocked_videos_list(id=None, **kwargs):
+
+            def inner_list():
+                if id == '0x0x0x0x0x0':
+                    return {
+                        'items': []
+                    }
+                if id == '1a1a1a1a1a1':
+                    thumbnails = {
+                        'high': {
+                            'width': 1028,
+                            'height': 720,
+                            'url': 'https://youtubecdn.c0m/big.jpg'
+                        }
+                    }
+                    return {
+                        'items': [
+                            {
+                                'id': '1a1a1a1a1a1',
+                                'snippet': {
+                                    'title': 'Some Title',
+                                    'description': 'Some Description',
+                                    'thumbnails': thumbnails,
+                                    'tags': ['Tag 1', 'Tag 2'],
+                                    'channelId': 'ccchhhaaannnnnneeelll',
+                                },
+                                'contentDetails': {
+                                    'duration': 'PT1M45S',
+                                },
+
+                            }
+                        ]
+                    }
+                raise NotImplementedError(id)
+
+            result = inner_list()
+            obj = mock.MagicMock()
+            obj.execute.return_value = result
+            return obj
+
+        def mocked_channels_list(id=None, **kwargs):
+
+            def inner_list():
+                if id == 'ccchhhaaannnnnneeelll':
+                    thumbnails = {
+                        'high': {
+                            'width': 1028,
+                            'height': 720,
+                            'url': 'https://youtubecdn.c0m/big.jpg'
+                        }
+                    }
+                    return {
+                        'items': [
+                            {
+                                'id': 'ccchhhaaannnnnneeelll',
+                                'snippet': {
+                                    'title': 'Some Channel',
+                                    'description': 'Channel Description',
+                                    'thumbnails': thumbnails,
+                                },
+                            }
+                        ]
+                    }
+                raise NotImplementedError(id)
+
+            result = inner_list()
+            obj = mock.MagicMock()
+            obj.execute.return_value = result
+            return obj
+
+        def mocked_build(*args, **params):
+            assert params['developerKey'] == settings.YOUTUBE_API_KEY
+            api = mock.MagicMock()
+            api.videos().list.side_effect = mocked_videos_list
+            api.channels().list.side_effect = mocked_channels_list
+            return api
+
+        build.side_effect = mocked_build
+
+        url = reverse('new:youtube_extract')
+        response = self.client.get(url)
+        eq_(response.status_code, 302)
+        self._login()
+        response = self.client.get(url)
+        eq_(response.status_code, 400)
+        response = self.client.get(url, {'url': 'junk'})
+        eq_(response.status_code, 200)
+        data = json.loads(response.content)
+        ok_(data['error'])
+
+        response = self.client.get(url, {'url': 'junk'})
+        eq_(response.status_code, 200)
+        data = json.loads(response.content)
+        ok_(data['error'])
+
+        youtube_url = 'https://www.youtube.com/watch?v=0x0x0x0x0x0'
+        response = self.client.get(url, {'url': youtube_url})
+        eq_(response.status_code, 200)
+        data = json.loads(response.content)
+        ok_('0x0x0x0x0x0' in data['error'])
+
+        youtube_url = 'https://www.youtube.com/watch?v=1a1a1a1a1a1'
+        response = self.client.get(url, {'url': youtube_url})
+        eq_(response.status_code, 200)
+        data = json.loads(response.content)
+        ok_('error' not in data)
+        eq_(data['title'], 'Some Title')
+        eq_(data['description'], 'Some Description')
+        eq_(data['thumbnail_url'], 'https://youtubecdn.c0m/big.jpg')
+        eq_(data['duration'], 1 * 60 + 45)
+        eq_(data['tags'], ['Tag 1', 'Tag 2'])
+        eq_(data['id'], '1a1a1a1a1a1')
+        eq_(data['channel']['title'], 'Some Channel')
+        eq_(data['channel']['id'], 'ccchhhaaannnnnneeelll')
+        eq_(data['channel']['description'], 'Channel Description')
+        eq_(data['channel']['thumbnail_url'], 'https://youtubecdn.c0m/big.jpg')
+
+    @mock.patch('requests.get')
+    @mock.patch('airmozilla.base.youtube.build')
+    def test_youtube_create(self, build, rget):
+
+        def mocked_videos_list(id=None, **kwargs):
+
+            def inner_list():
+                if id == '0x0x0x0x0x0':
+                    return {
+                        'items': []
+                    }
+                if id == '1a1a1a1a1a1':
+                    thumbnails = {
+                        'high': {
+                            'width': 1028,
+                            'height': 720,
+                            'url': 'https://youtubecdn.c0m/big.jpg'
+                        }
+                    }
+                    return {
+                        'items': [
+                            {
+                                'id': '1a1a1a1a1a1',
+                                'snippet': {
+                                    'title': 'Some Title',
+                                    'description': 'Some Description',
+                                    'thumbnails': thumbnails,
+                                    'tags': ['Tag 1', 'Tag 2'],
+                                    'channelId': 'ccchhhaaannnnnneeelll',
+                                },
+                                'contentDetails': {
+                                    'duration': 'PT1M45S',
+                                },
+
+                            }
+                        ]
+                    }
+                raise NotImplementedError(id)
+
+            result = inner_list()
+            obj = mock.MagicMock()
+            obj.execute.return_value = result
+            return obj
+
+        def mocked_channels_list(id=None, **kwargs):
+
+            def inner_list():
+                if id == 'ccchhhaaannnnnneeelll':
+                    thumbnails = {
+                        'high': {
+                            'width': 1028,
+                            'height': 720,
+                            'url': 'https://youtubecdn.c0m/channel.jpg'
+                        }
+                    }
+                    return {
+                        'items': [
+                            {
+                                'id': 'ccchhhaaannnnnneeelll',
+                                'snippet': {
+                                    'title': 'Some Channel',
+                                    'description': 'Channel Description',
+                                    'thumbnails': thumbnails,
+                                },
+                            }
+                        ]
+                    }
+                raise NotImplementedError(id)
+
+            result = inner_list()
+            obj = mock.MagicMock()
+            obj.execute.return_value = result
+            return obj
+
+        def mocked_build(*args, **params):
+            assert params['developerKey'] == settings.YOUTUBE_API_KEY
+            api = mock.MagicMock()
+            api.videos().list.side_effect = mocked_videos_list
+            api.channels().list.side_effect = mocked_channels_list
+            return api
+
+        build.side_effect = mocked_build
+
+        def mocked_get(url):
+            if url.endswith('big.jpg') or url.endswith('channel.jpg'):
+                with open(self.sample_jpg, 'rb') as f:
+                    return Response(f.read())
+            raise NotImplementedError(url)
+
+        rget.side_effect = mocked_get
+
+        url = reverse('new:youtube_create')
+        response = self.client.get(url)
+        eq_(response.status_code, 405)
+        response = self.client.post(url)
+        eq_(response.status_code, 302)
+        self._login()
+        response = self.client.post(url)
+        eq_(response.status_code, 400)
+        response = self.post_json(url, {'other': 'stuff'})
+        eq_(response.status_code, 400)
+        response = self.post_json(url, {'id': '1a1a1a1a1a1'})
+        eq_(response.status_code, 200)
+        event_data = json.loads(response.content)
+        eq_(event_data['youtube_id'], '1a1a1a1a1a1')
+
+        event = Event.objects.get(id=event_data['id'])
+        eq_(event.status, Event.STATUS_INITIATED)
+        ok_(Tag.objects.get(name='Tag 1') in event.tags.all())
+        ok_(Tag.objects.get(name='Tag 2') in event.tags.all())
+        eq_(event.title, 'Some Title')
+        eq_(event.description, 'Some Description')
+
+        channel = Channel.objects.get(name='Some Channel')
+        ok_(channel in event.channels.all())
+        # this channel will be created in a parent channel called YouTube
+        eq_(channel.parent.name, u'YouTube\u2122')
+        eq_(channel.parent.slug, 'youtube')

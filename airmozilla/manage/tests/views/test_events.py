@@ -14,11 +14,11 @@ import pyquery
 from django.conf import settings
 from django.contrib.auth.models import User, Group, Permission
 from django.core import mail
+from django.core.cache import cache
 from django.utils import timezone
 from django.utils.timezone import utc
 from django.core.files import File
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import (
     Event,
@@ -35,7 +35,8 @@ from airmozilla.main.models import (
     EventHitStats,
     UserProfile,
     CuratedGroup,
-    Picture
+    Picture,
+    LocationDefaultEnvironment,
 )
 from airmozilla.base.tests.test_mozillians import (
     Response,
@@ -854,7 +855,27 @@ class TestEvents(ManageTestCase):
             list(discussion.moderators.all())
         )
 
-    def test_event_duplication_with_curated_groups(self):
+    @mock.patch('requests.get')
+    def test_event_duplication_with_curated_groups(self, rget):
+
+        def mocked_get(url, **options):
+            if '/v2/groups/' in url and 'name=badasses' in url:
+                return Response(json.dumps({
+                    "count": 1,
+                    "results": [
+                        {
+                            "url": "http://muzillians.org/group/1",
+                            "_url": "http://muzillians.org/api/group/1",
+                            "id": "1000",
+                            "name": "badasses",
+                            "member_count": 1,
+                            "next": "should not be necessary",
+                        }
+                    ]
+                }))
+            raise NotImplementedError(url)
+        rget.side_effect = mocked_get
+
         event = Event.objects.get(title='Test event')
         CuratedGroup.objects.create(
             event=event,
@@ -876,12 +897,14 @@ class TestEvents(ManageTestCase):
             'estimated_duration': event.estimated_duration,
             'channels': [x.pk for x in event.channels.all()],
             'enable_discussion': True,
-            'curated_groups': 'badasses'
+            'curated_groups': ['badasses'],
         }
         response = self.client.post(url, data)
         eq_(response.status_code, 302)
         # this is expected to exist
         ok_(CuratedGroup.objects.get(event__title='Different'))
+
+        cache.clear()
 
     def test_event_duplication_with_picture(self):
         event = Event.objects.get(title='Test event')
@@ -956,7 +979,8 @@ class TestEvents(ManageTestCase):
         # and now the real test
         response = self.client.get(url)
         eq_(response.status_code, 200)
-        ok_(edit_url in response.content)
+        response_content = response.content.decode('utf-8')
+        ok_(edit_url in response_content)
 
     @mock.patch('airmozilla.manage.vidly.urllib2')
     def test_vidly_url_to_shortcode(self, p_urllib2):
@@ -1312,7 +1336,7 @@ class TestEvents(ManageTestCase):
             reverse('manage:event_edit', kwargs={'id': event.pk}),
             dict(self.event_base_data,
                  title=event.title,
-                 tags='One, Two')
+                 tags=['One', 'Two'])
         )
         eq_(response.status_code, 302)
         event = Event.objects.get(pk=event.pk)
@@ -1327,7 +1351,7 @@ class TestEvents(ManageTestCase):
             reverse('manage:event_edit', kwargs={'id': event.pk}),
             dict(self.event_base_data,
                  title=event.title,
-                 tags='One, Two, THREE')
+                 tags=['One', 'Two', 'THREE'])
         )
         count_tags_after = Tag.objects.all().count()
         eq_(count_tags_before, count_tags_after)
@@ -1762,9 +1786,9 @@ class TestEvents(ManageTestCase):
 
         view_url_event = reverse('main:event', args=(event.slug,))
         view_url_event_hit = reverse('main:event', args=(event_hit.slug,))
-
-        eq_(response.content.count(view_url_event_hit), 1)
-        eq_(response.content.count(view_url_event), 0)
+        response_content = response.content.decode('utf-8')
+        eq_(response_content.count(view_url_event_hit), 1)
+        eq_(response_content.count(view_url_event), 0)
 
     def test_event_edit_without_vidly_template(self):
         """based on https://bugzilla.mozilla.org/show_bug.cgi?id=879725"""
@@ -1804,7 +1828,7 @@ class TestEvents(ManageTestCase):
             'Additional comments from original requested event'
             in response.content
         )
-        ok_('hi!<br>&#34;friend&#34;' in response.content)
+        ok_('hi!<br />&quot;friend&quot;' in response.content)
 
     def test_event_edit_of_retracted_submitted_event(self):
         event = Event.objects.get(title='Test event')
@@ -1898,10 +1922,10 @@ class TestEvents(ManageTestCase):
     def test_editing_event_curated_groups(self, rget, rlogging):
 
         def mocked_get(url, **options):
-            if 'offset=0' in url:
-                return Response(GROUPS1)
-            if 'offset=500' in url:
+            if '/v2/groups/' in url and 'page=2' in url:
                 return Response(GROUPS2)
+            if '/v2/groups/' in url:
+                return Response(GROUPS1)
             raise NotImplementedError(url)
         rget.side_effect = mocked_get
 
@@ -1913,10 +1937,11 @@ class TestEvents(ManageTestCase):
         ok_('Curated groups' in response.content)
         response = self.client.post(
             url,
-            dict(self.event_base_data,
-                 title=event.title,
-                 curated_groups='Group 1, Group 2'
-                 )
+            dict(
+                self.event_base_data,
+                title=event.title,
+                curated_groups=['Group 1', 'Group 2'],
+            )
         )
         eq_(response.status_code, 302)
         ok_(CuratedGroup.objects.get(event=event, name='Group 1'))
@@ -1925,15 +1950,19 @@ class TestEvents(ManageTestCase):
         # edit it again
         response = self.client.post(
             url,
-            dict(self.event_base_data,
-                 title=event.title,
-                 curated_groups='Group 1, Group X'
-                 )
+            dict(
+                self.event_base_data,
+                title=event.title,
+                curated_groups=['Group 1', 'Group X'],
+            )
         )
         eq_(response.status_code, 302)
         ok_(CuratedGroup.objects.get(event=event, name='Group 1'))
         ok_(CuratedGroup.objects.get(event=event, name='Group X'))
         ok_(not CuratedGroup.objects.filter(event=event, name='Group 2'))
+
+        # because fetching groups is cached
+        cache.clear()
 
     def test_event_upload(self):
         event = Event.objects.get(title='Test event')
@@ -2284,6 +2313,51 @@ class TestEvents(ManageTestCase):
         submission = VidlySubmission.objects.get(id=submission.id)
         # it should not have changed
         ok_(not submission.token_protection)
+
+    def test_is_template_environment_mismatch(self):
+        event = Event.objects.get(title='Test event')
+
+        url = reverse(
+            'manage:event_template_environment_mismatch',
+            args=(event.id,)
+        )
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        eq_(json.loads(response.content), None)
+
+        assert event.location
+        assert event.template
+        event.template_environment = {
+            'foo': 'bar'
+        }
+        event.save()
+
+        LocationDefaultEnvironment.objects.create(
+            location=event.location,
+            template=event.template,
+            privacy=event.privacy,
+            template_environment={
+                'something': 'different',
+            }
+        )
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        eq_(
+            json.loads(response.content)['url'],
+            reverse('manage:location_edit', args=(event.location.id,))
+        )
+
+        # we can now post here
+        response = self.client.post(url)
+        eq_(response.status_code, 302)
+        # reload
+        event = Event.objects.get(id=event.id)
+        eq_(
+            event.template_environment,
+            {
+                'something': 'different',
+            }
+        )
 
     def test_edit_event_archive_time(self):
         event = Event.objects.get(title='Test event')

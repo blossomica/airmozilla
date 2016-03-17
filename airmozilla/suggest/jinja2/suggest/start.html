@@ -1,0 +1,101 @@
+{% extends 'suggest/suggest_base.html' %}
+{% set page='suggest' %}
+
+{% block page_title %}
+Request | {{ super() }}
+{% endblock %}
+
+{% block banner %}
+    {% include "main/_banner_small.html" %}
+{% endblock %}
+
+{% block breadcrumb %}
+   {# deliberately empty #}
+{% endblock %}
+
+{% block site_css %}
+  {{ super() }}
+  {% stylesheet 'suggest_start' %}
+{% endblock %}
+
+{% block site_js %}
+  {{ super() }}
+  {% javascript 'suggest_start' %}
+{% endblock %}
+
+
+{% block content_main %}
+
+{% for event in suggestions %}
+  {% if loop.first %}
+  <h2 class="section-title">Pending Event Requests</h2>
+  <table class="suggestions">
+    <thead>
+      <tr>
+        <th>Event title</th>
+        <th>Status</th>
+        <th>&nbsp;</th>
+      </tr>
+    </thead>
+    <tbody>
+  {% endif %}
+
+  <tr>
+    <td>
+      <a href="{{ next_url(event) }}">{{ event.title }}</a>
+      {% if not event.upcoming %}
+      (pre-recorded)
+      {% endif %}
+    </td>
+    <td>
+      {% if not event.picture and not event.placeholder_img %}
+      Image missing!
+      {% else %}
+      {{ state_description(event) }}
+      {% endif %}
+    </td>
+    <td class="delete" data-delete-url="{{ url('suggest:delete', event.pk) }}">
+      {% if event.accepted %}
+        {% if event.accepted.status == Event.STATUS_INITIATED %}
+          not yet scheduled
+        {% elif event.accepted.status == Event.STATUS_SCHEDULED %}
+          {% if event.accepted.needs_approval() %}
+          accepted but pending approval
+          {% else %}
+          <a class="accepted-and-scheduled" href="{{ url('main:event', event.accepted.slug) }}">accepted and scheduled</a>
+          {% endif %}
+        {% elif event.accepted.status == Event.STATUS_REMOVED %}
+          accepted but removed
+        {% endif %}
+      {% else %}
+      <button class="delete-button">Delete</button>
+      <span class="delete-confirm-question">Are you sure?</span>
+      <button class="delete-confirm">Yes</button>
+      <button class="delete-cancel">No</button>
+      {% endif %}
+    </td>
+  </tr>
+
+  {% if loop.last %}
+    </tbody>
+  </table>
+  <p class="hide-accepted-scheduled">
+      Hide <b>accepted and scheduled</b> events
+      <input type="checkbox" name="hide_accepted_scheduled" checked>
+  </p>
+  {% endif %}
+
+{% endfor %}
+
+  <a name="new"></a>
+  <h2 class="section-title schedule-event">Schedule an Event</h2>
+  <h3 class="section-sub-title">What are you going to call it?</h3>
+
+  {% include "suggest/_default_form.html" %}
+
+  <p class="start-tooltip">
+  Your event's title will appear in public feeds.
+  Titles for non-public events <b>should <i>not</i> contain confidential information</b>.
+  </p>
+
+{% endblock %}

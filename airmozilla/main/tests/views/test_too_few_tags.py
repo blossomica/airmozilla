@@ -1,6 +1,9 @@
-from django.contrib.auth.models import User
-from funfactory.urlresolvers import reverse
 from nose.tools import eq_, ok_
+
+from django.contrib.auth.models import User
+from django.core.urlresolvers import reverse
+from django.utils.encoding import smart_text
+
 from airmozilla.main.models import (
     Event,
     Tag,
@@ -11,8 +14,6 @@ from airmozilla.base.tests.testbase import DjangoTestCase
 
 
 class TestTooFewTags(DjangoTestCase):
-    # other_image = 'airmozilla/manage/tests/other_logo.png'
-    # third_image = 'airmozilla/manage/tests/other_logo_reversed.png'
 
     def test_view_random_event(self):
         url = reverse('main:too_few_tags')
@@ -29,19 +30,19 @@ class TestTooFewTags(DjangoTestCase):
 
         event = Event.objects.get(title='Test event')
         assert not event.tags.all().count()
-        # assert event.tags.all().count() < 2
-        # print response.content
-        ok_(event.description in response.content)
+        content = smart_text(response.content)
+        ok_(event.description in content)
         # its event_id should be in there somewhere as a hidden input
-        # print response.content
-        ok_('value="%s"' % event.id in response.content)
+        ok_('value="%s"' % event.id in content)
 
         event.tags.add(Tag.objects.create(name='mytag1'))
         response = self.client.get(url)
         eq_(response.status_code, 200)
+        content = smart_text(response.content)
         ok_('value="%s"' % event.id in response.content)
 
         event.tags.add(Tag.objects.create(name='mytag2'))
+
         response = self.client.get(url)
         eq_(response.status_code, 200)
         ok_('value="%s"' % event.id not in response.content)

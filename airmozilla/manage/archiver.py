@@ -7,11 +7,9 @@ from django.core.cache import cache
 from django.utils import timezone
 from django.contrib.sites.models import Site
 from django.db.models import Q
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import Event, VidlySubmission
-from airmozilla.webrtc.sending import email_about_mozillian_video
 from .vidly import query
 
 
@@ -62,7 +60,7 @@ def archive(event, swallow_email_exceptions=False, verbose=False):
                 if verbose:  # pragma: no cover
                     print (
                         'Unable to find Vid.ly video with tag %s for event '
-                        '"%s"' % (
+                        '"%s"\n' % (
                             tag,
                             event
                         )
@@ -98,7 +96,7 @@ def archive(event, swallow_email_exceptions=False, verbose=False):
                 )
                 if verbose:  # pragma: no cover
                     print (
-                        'Unable to archive event "%s" with tag %s'
+                        'Unable to archive event "%s" with tag %s\n'
                         % (
                             event,
                             tag
@@ -132,13 +130,6 @@ def archive(event, swallow_email_exceptions=False, verbose=False):
         for submission in submissions:
             submission.finished = timezone.now()
             submission.save()
-
-        # if it belonged to a Mozillian, then send an email to the creator
-        if event.mozillian:
-            email_about_mozillian_video(
-                event,
-                swallow_errors=not settings.DEBUG
-            )
 
 
 def build_absolute_url(uri):

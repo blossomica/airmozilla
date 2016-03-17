@@ -1,10 +1,9 @@
 import json
+from importlib import import_module
 
 from django.conf import settings
 from django.test import TestCase
-from django.utils.importlib import import_module
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 import mock
 from nose.tools import ok_, eq_
@@ -14,78 +13,10 @@ from airmozilla.base import mozillians
 from airmozilla.base.tests.testbase import Response
 from airmozilla.main.models import UserProfile
 
-
-VOUCHED_FOR = """
-{
-  "meta": {
-    "previous": null,
-    "total_count": 1,
-    "offset": 0,
-    "limit": 20,
-    "next": null
-  },
-  "objects": [
-    {
-      "website": "",
-      "bio": "",
-      "resource_uri": "/api/v1/users/2429/",
-      "last_updated": "2012-11-06T14:41:47",
-      "groups": [
-        "ugly tuna"
-      ],
-      "city": "Casino",
-      "skills": [],
-      "country": "Albania",
-      "region": "Bush",
-      "id": "2429",
-      "languages": [],
-      "allows_mozilla_sites": true,
-      "photo": "http://www.gravatar.com/avatar/0409b497734934400822bb33...",
-      "is_vouched": true,
-      "email": "peterbe@gmail.com",
-      "ircname": "",
-      "allows_community_sites": true,
-      "full_name": "Peter Bengtsson"
-    }
-  ]
-}
-"""
-
-NOT_VOUCHED_FOR = """
-{
-  "meta": {
-    "previous": null,
-    "total_count": 1,
-    "offset": 0,
-    "limit": 20,
-    "next": null
-  },
-  "objects": [
-    {
-      "website": "http://www.peterbe.com/",
-      "bio": "",
-      "resource_uri": "/api/v1/users/2430/",
-      "last_updated": "2012-11-06T15:37:35",
-      "groups": [
-        "no beard"
-      ],
-      "city": "<style>p{font-style:italic}</style>",
-      "skills": [],
-      "country": "Heard Island and McDonald Islands",
-      "region": "Drunk",
-      "id": "2430",
-      "languages": [],
-      "allows_mozilla_sites": true,
-      "photo": "http://www.gravatar.com/avatar/23c6d359b6f7af3d3f91ca9e17...",
-      "is_vouched": false,
-      "email": "tmickel@mit.edu",
-      "ircname": "",
-      "allows_community_sites": true,
-      "full_name": null
-    }
-  ]
-}
-"""
+from airmozilla.base.tests.test_mozillians import (
+    VOUCHED_FOR_USERS,
+    NOT_VOUCHED_FOR_USERS,
+)
 
 
 class TestViews(TestCase):
@@ -145,9 +76,9 @@ class TestViews(TestCase):
         """Non-Mozilla email -> failure."""
         def mocked_get(url, **options):
             if 'tmickel' in url:
-                return Response(NOT_VOUCHED_FOR)
+                return Response(NOT_VOUCHED_FOR_USERS)
             if 'peterbe' in url:
-                return Response(VOUCHED_FOR)
+                return Response(VOUCHED_FOR_USERS)
             raise NotImplementedError(url)
         rget.side_effect = mocked_get
 
@@ -173,7 +104,7 @@ class TestViews(TestCase):
         assert not UserProfile.objects.all()
 
         def mocked_get(url, **options):
-            return Response(VOUCHED_FOR)
+            return Response(VOUCHED_FOR_USERS)
 
         rget.side_effect = mocked_get
 
@@ -246,8 +177,6 @@ class TestViews(TestCase):
         eq_(response['content-type'], 'application/json')
         redirect = json.loads(response.content)['redirect']
         eq_(redirect, settings.LOGIN_REDIRECT_URL)
-        # self.assertRedirects(response,
-        #                      settings.LOGIN_REDIRECT_URL)
 
     @mock.patch('requests.get')
     def test_was_contributor_now_mozilla_bid(self, rget):
@@ -257,7 +186,7 @@ class TestViews(TestCase):
         assert not UserProfile.objects.all()
 
         def mocked_get(url, **options):
-            return Response(VOUCHED_FOR)
+            return Response(VOUCHED_FOR_USERS)
 
         rget.side_effect = mocked_get
         response = self._login_attempt('peterbe@gmail.com')

@@ -1,0 +1,18 @@
+{% extends 'main/main_base.html' %}
+{% set page='suggest' %}
+
+{% block site_css %}
+  {{ super() }}
+  {% stylesheet 'suggest_base' %}
+{% endblock %}
+
+
+{% block site_js %}
+  {{ super() }}
+  {% javascript 'suggest_base' %}
+{% endblock %}
+
+
+{% block banner %}
+    {% include "main/_banner_small.html" %}
+{% endblock %}

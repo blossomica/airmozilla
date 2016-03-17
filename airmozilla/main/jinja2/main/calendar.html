@@ -1,0 +1,33 @@
+{% extends 'main/main_base.html' %}
+{% set page='calendar' %}
+
+{% block page_title %}
+Calendar | {{ super() }}
+{% endblock %}
+
+{% block site_css %}
+  {{ super() }}
+  {% stylesheet 'calendar' %}
+  {% stylesheet 'calendar_print' %}
+{% endblock %}
+
+
+{% block site_js %}
+  {{ super() }}
+  {% javascript 'calendar' %}
+{% endblock %}
+
+
+
+{% block content_main %}
+  <h2 class="section-title">Calendar</h2>
+  <div id="calendar" data-events-url="{{ url('main:calendar_data') }}"></div>
+
+  <p>
+    <input type="checkbox" id="startsOnMonday">
+    <label for="startsOnMonday">Week starts on a Monday</label>
+  </p>
+
+  <p>All times are in your local timezone</p>
+  <p>For iCal feeds for all locations visit the <a href="{{ url('main:calendars') }}">Calendars page</a>.</p>
+{% endblock %}

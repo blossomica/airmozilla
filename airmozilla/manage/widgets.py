@@ -2,11 +2,10 @@ import cgi
 
 from django.forms import widgets
 from django.utils.safestring import mark_safe
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import Picture
-from airmozilla.main.helpers import thumbnail
+from airmozilla.main.templatetags.jinja_helpers import thumbnail
 
 
 class PictureWidget(widgets.Select):

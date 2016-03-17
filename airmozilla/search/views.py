@@ -2,22 +2,26 @@ import re
 import urllib
 import time
 
-from django.shortcuts import render
+from django.shortcuts import render, redirect, get_object_or_404
 from django import http
 from django.db.utils import DatabaseError
 from django.db import transaction
 from django.conf import settings
+from django.core.urlresolvers import reverse
+from django.contrib.auth.decorators import login_required
+from django.contrib import messages
+from django.views.decorators.http import require_POST
 
-from funfactory.urlresolvers import reverse
+from jsonview.decorators import json_view
 
-from airmozilla.main.models import Event, Tag, Channel
+from airmozilla.main.models import Event, Tag, Channel, get_profile_safely
 from airmozilla.main.views import is_contributor
 from airmozilla.base.utils import paginator
 from airmozilla.main.utils import get_event_channels
 
 from . import forms
 from . import utils
-from .models import LoggedSearch
+from .models import LoggedSearch, SavedSearch
 from .split_search import split_search
 
 
@@ -150,6 +154,29 @@ def home(request):
                 sort=request.GET.get('sort'),
                 fuzzy=True
             )
+    elif request.GET.get('ss'):
+        savedsearch = get_object_or_404(
+            SavedSearch,
+            id=request.GET.get('ss')
+        )
+        context['savedsearch'] = savedsearch
+        events = savedsearch.get_events()
+        # But if you're just browsing we want to make sure you don't
+        # see anything you're not supposed to see.
+        if request.user.is_active:
+            if is_contributor(request.user):
+                events = events.exclude(privacy=Event.PRIVACY_COMPANY)
+        else:
+            events = events.filter(privacy=Event.PRIVACY_PUBLIC)
+
+        # It's not obvious how to sort these. They all match the saved
+        # search.
+        # Let's keep it simple and sort by start time for now
+        events = events.order_by('-start_time')
+    else:
+        events = None
+
+    if events is not None:
 
         try:
             page = int(request.GET.get('page', 1))
@@ -173,7 +200,11 @@ def home(request):
         next_page_url = prev_page_url = None
 
         def url_maker(page):
-            querystring = {'q': context['q'].encode('utf-8'), 'page': page}
+            querystring = {'page': page}
+            if context.get('savedsearch'):
+                querystring['ss'] = context['savedsearch'].id
+            else:
+                querystring['q'] = context['q'].encode('utf-8')
             querystring = urllib.urlencode(querystring)
             return '%s?%s' % (reverse('search:home'), querystring)
 
@@ -192,7 +223,7 @@ def home(request):
         if (
             log_searches and
             not _database_error_happened and
-            request.GET['q'].strip()
+            request.GET.get('q', '').strip()
         ):
             logged_search = LoggedSearch.objects.create(
                 term=request.GET['q'][:200],
@@ -297,3 +328,194 @@ def _search(qs, q, **options):
     else:
         qs = qs.order_by('-start_time')
     return qs
+
+
+@require_POST
+@login_required
+@transaction.atomic()
+def savesearch(request):
+    q = request.POST.get('q', '').strip()
+    if not q:
+        return http.HttpResponseBadRequest('no q')
+    form = forms.SearchForm(request.POST)
+    if not form.is_valid():
+        return http.HttpResponseBadRequest(form.errors)
+
+    title = form.cleaned_data['q']
+    rest, params = split_search(title, ('tag', 'channel'))
+    tags = None
+    channels = None
+    if params.get('tag'):
+        tags = Tag.objects.filter(name__iexact=params['tag'])
+        if tags:
+            title = rest
+    if params.get('channel'):
+        channels = Channel.objects.filter(
+            name__iexact=params['channel']
+        )
+        if channels:
+            title = rest
+
+    filters = {}
+    if q:
+        filters['title'] = {
+            'include': title
+        }
+    if tags:
+        filters['tags'] = {
+            'include': [tag.id for tag in tags],
+        }
+    if channels:
+        filters['channels'] = {
+            'include': [channel.id for channel in channels],
+        }
+
+    for other in SavedSearch.objects.filter(user=request.user):
+        if other.filters == filters:
+            return redirect('search:savedsearch', id=other.id)
+
+    savedsearch = SavedSearch.objects.create(
+        user=request.user,
+        filters=filters,
+    )
+    messages.success(
+        request,
+        'Search saved'
+    )
+    return redirect('search:savedsearch', id=savedsearch.id)
+
+
+@login_required
+@transaction.atomic()
+def savedsearch(request, id=None):
+    savedsearch = get_object_or_404(SavedSearch, id=id)
+
+    if request.method == 'POST':
+        forked = False
+        if savedsearch.user != request.user:
+            # fork the saved search
+            forked = True
+            savedsearch = SavedSearch.objects.create(
+                user=request.user,
+                name=savedsearch.name,
+                filters=savedsearch.filters,
+            )
+        form = forms.SavedSearchForm(request.POST)
+        if form.is_valid():
+            data = form.export_filters()
+            savedsearch.name = form.cleaned_data['name']
+            savedsearch.filters = data
+            savedsearch.save()
+
+            if forked:
+                messages.success(
+                    request,
+                    'Saved Search forked and saved'
+                )
+            else:
+                messages.success(
+                    request,
+                    'Saved Search saved'
+                )
+            return redirect('search:savedsearch', id=savedsearch.id)
+    elif request.GET.get('sample'):
+        events = savedsearch.get_events()
+        return http.JsonResponse({'events': events.count()})
+    else:
+        data = forms.SavedSearchForm.convert_filters(
+            savedsearch.filters,
+            pks=True
+        )
+        data['name'] = savedsearch.name
+        form = forms.SavedSearchForm(data)
+
+    context = {
+        'savedsearch': savedsearch,
+        'form': form,
+        'use_findable': True,
+    }
+    return render(request, 'search/savesearch.html', context)
+
+
+@login_required
+@transaction.atomic()
+def new_savedsearch(request):
+    if request.method == 'POST':
+        form = forms.SavedSearchForm(request.POST)
+        if form.is_valid():
+            data = form.export_filters()
+            SavedSearch.objects.create(
+                user=request.user,
+                filters=data,
+                name=form.cleaned_data['name'],
+            )
+            messages.success(
+                request,
+                'Saved Search saved'
+            )
+            return redirect('search:savedsearches')
+    else:
+        form = forms.SavedSearchForm()
+
+    context = {
+        'form': form,
+        'use_findable': False,
+    }
+    return render(request, 'search/savesearch.html', context)
+
+
+@login_required
+def savedsearches(request):
+    context = {}
+    return render(request, 'search/savedsearches.html', context)
+
+
+@login_required
+@json_view
+def savedsearches_data(request):
+    context = {}
+    qs = SavedSearch.objects.filter(
+        user=request.user
+    ).order_by('-created')
+    searches = []
+    for savedsearch in qs:
+        item = {
+            'id': savedsearch.id,
+            'name': savedsearch.name,
+            'summary': savedsearch.summary,
+            'modified': savedsearch.modified.isoformat(),
+        }
+        searches.append(item)
+
+    # We need a general Feed URL that is tailored to this user
+    from airmozilla.main.context_processors import base
+    feed = base(request)['get_feed_data']()
+
+    if request.user.is_active:
+        profile = get_profile_safely(request.user)
+        if profile and profile.contributor:
+            calendar_privacy = 'contributors'
+        else:
+            calendar_privacy = 'company'
+    else:
+        calendar_privacy = 'public'
+
+    context['savedsearches'] = searches
+    context['urls'] = {
+        'search:savedsearch': reverse('search:savedsearch', args=(0,)),
+        'search:home': reverse('search:home'),
+        'feed': feed['url'],
+        'ical': reverse('main:calendar_ical', args=(calendar_privacy,)),
+
+    }
+    return context
+
+
+@login_required
+@json_view
+def delete_savedsearch(request, id):
+    savedsearch = get_object_or_404(SavedSearch, id=id)
+    if savedsearch.user != request.user:
+        return http.HttpResponseForbidden('Not yours to delete')
+    savedsearch.delete()
+    return {'ok': True}

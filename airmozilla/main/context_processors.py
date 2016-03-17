@@ -1,11 +1,12 @@
+# -*- coding: utf-8 -*-
+
 import datetime
 
 from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 from django.core.cache import cache
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import (
     Event,
@@ -22,42 +23,97 @@ def nav_bar(request):
 
     def get_nav_bar():
         items = [
-            ('Home', reverse('main:home'), 'home', ''),
-            ('About', '/about/', 'about', ''),
-            ('Channels', reverse('main:channels'), 'channels', ''),
-            ('Calendar', reverse('main:calendar'), 'calendar', ''),
+            ('Home', reverse('main:home'), 'home', '', None),
+            ('About', '/about/', '/about', '', None),
+            ('Channels', reverse('main:channels'), 'channels', '', None),
+            ('Calendar', reverse('main:calendar'), 'calendar', '', None),
+            ('Tag Cloud', reverse('main:tag_cloud'), 'tag_cloud', '', None),
         ]
-        if not request.user.is_staff:
-            items.append(
-                ('Tag Cloud', reverse('main:tag_cloud'), 'tag_cloud', '')
-            )
-        items.append(
-            ('Starred', reverse('starred:home'), 'starred', '')
-        )
-        unfinished_events = 0
         if request.user.is_active:
+            user_sub_items = []
+
+            new_sub_items = []
             unfinished_events = Event.objects.filter(
                 creator=request.user,
                 status=Event.STATUS_INITIATED,
                 upload__isnull=False,
             ).count()
-            if settings.USE_NEW_UPLOADER:
-                items.append(
-                    ('New/Upload', reverse('new:home'), 'new', ''),
-                )
-            else:
-                items.append(
-                    ('Requests', reverse('suggest:start'), 'suggest', ''),
-                )
+
+            new_home_url = reverse('new:home')
+            if unfinished_events:
+                new_sub_items.append((
+                    'Unfinished Videos ({})'.format(unfinished_events),
+                    new_home_url,
+                    '',
+                    ''
+                ))
+            new_sub_items.append((
+                'Web Camera Video',
+                new_home_url + 'record',
+                '',
+                ''
+            ))
+            new_sub_items.append((
+                'Upload Video',
+                new_home_url + 'upload',
+                '',
+                ''
+            ))
+            if settings.YOUTUBE_API_KEY:
+                new_sub_items.append((
+                    u'YouTube™ video',
+                    new_home_url + 'youtube',
+                    '',
+                    ''
+                ))
+            new_sub_items.append((
+                'Upcoming Event',
+                reverse('suggest:start') + '#new',
+                '',
+                ''
+            ))
+
+            items.append((
+                'New/Upload',
+                new_home_url,
+                'new',
+                '',
+                new_sub_items,
+            ))
             if request.user.is_staff:
-                items.append(
-                    ('Management', reverse('manage:events'), '', ''),
-                )
+                user_sub_items.append((
+                    'Management',
+                    reverse('manage:events'),
+                    '',
+                    '',
+                ))
+            user_sub_items.append((
+                'Starred',
+                reverse('starred:home'),
+                '',
+                '',
+            ))
+            user_sub_items.append((
+                'Saved Searches',
+                reverse('search:savedsearches'),
+                'saved-searches',
+                '',
+            ))
             if not settings.BROWSERID_DISABLED:
-                items.append(
-                    ('Sign out', '/browserid/logout/', '', 'browserid-logout'),
-                )
-        return {'items': items, 'unfinished_events': unfinished_events}
+                user_sub_items.append((
+                    'Sign out',
+                    '/browserid/logout/',
+                    '',
+                    'browserid-logout',
+                ))
+            items.append((
+                request.user.email.split('@')[0],
+                '#',  # url
+                'you',  # id
+                '',  # class
+                user_sub_items,
+            ))
+        return {'items': items}
 
     # The reason for making this a closure is because this stuff is not
     # needed on every single template render. Only the main pages where
@@ -67,7 +123,6 @@ def nav_bar(request):
 
 def dev(request):
     return {
-        'DEV': settings.DEV,
         'DEBUG': settings.DEBUG,
         'BROWSERID_DISABLED': settings.BROWSERID_DISABLED,
     }
@@ -108,6 +163,7 @@ def base(request):
         # used for things like {% if event.attr == Event.ATTR1 %}
         'Event': Event,
         'get_feed_data': get_feed_data,
+        # 'has_youtube_api_key': bool(settings.YOUTUBE_API_KEY),
     }
 
 
@@ -258,6 +314,10 @@ def _get_featured_events(channels, anonymous, contributor):
     yesterday -= datetime.timedelta(seconds=1)
     featured = (
         EventHitStats.objects
+        .filter(
+            Q(event__status=Event.STATUS_SCHEDULED) |
+            Q(event__status=Event.STATUS_PROCESSING)
+        )
         .exclude(event__archive_time__isnull=True)
         .filter(event__archive_time__lt=yesterday)
         .exclude(event__channels__exclude_from_trending=True)

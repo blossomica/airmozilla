@@ -8,11 +8,6 @@ ui-view {
     display: block;
 }
 
-[ng-cloak],
-.ng-cloak {
-  display: none !important;
-}
-
 input.has-error,
 textarea.has-error {
     border: 1px solid darkred;
@@ -385,4 +380,13 @@ video.ready {
 button.smaller {
     font-size: 75%;
     padding: 6px 10px;
+}
+
+input.youtube-url {
+    width: 75%;
+    font-size: 130%;
+}
+
+.youtube-intro {
+    margin:50px 0;
 }

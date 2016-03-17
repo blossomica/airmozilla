@@ -1,12 +1,26 @@
 # This is your project's main settings file that can be committed to your
-# repo. If you need to override a setting locally, use settings_local.py
+# repo. If you need to override a setting locally, use settings/local.py
+import os
 
-from funfactory.settings_base import *
+from bundles import PIPELINE_CSS, PIPELINE_JS  # NOQA
 
-# Name of the top-level module where you put all your apps.
-# If you did not install Playdoh with the funfactory installer script
-# you may need to edit this value. See the docs about installing from a
-# clone.
+
+ROOT = os.path.abspath(
+    os.path.join(
+        os.path.dirname(__file__),
+        '..',
+        '..'
+    ))
+
+
+def path(*dirs):
+    return os.path.join(ROOT, *dirs)
+
+
+SITE_ID = 1
+
+LANGUAGE_CODE = 'en-US'
+
 PROJECT_MODULE = 'airmozilla'
 
 
@@ -14,34 +28,32 @@ PROJECT_MODULE = 'airmozilla'
 ROOT_URLCONF = '%s.urls' % PROJECT_MODULE
 
 INSTALLED_APPS = (
-    'funfactory',
-    'compressor',
+    'pipeline',
     'django_browserid',
-    'django.contrib.auth',
     'django.contrib.contenttypes',
+    'django.contrib.auth',
     'django.contrib.sessions',
     'django.contrib.staticfiles',
     'commonware.response.cookies',
     'session_csrf',
 
     # Application base, containing global templates.
-    '%s.base' % PROJECT_MODULE,
-    '%s.main' % PROJECT_MODULE,
-    '%s.authentication' % PROJECT_MODULE,
-    '%s.manage' % PROJECT_MODULE,
-    '%s.suggest' % PROJECT_MODULE,
-    '%s.search' % PROJECT_MODULE,
-    '%s.comments' % PROJECT_MODULE,
-    '%s.uploads' % PROJECT_MODULE,
-    '%s.starred' % PROJECT_MODULE,
-    '%s.subtitles' % PROJECT_MODULE,
-    '%s.surveys' % PROJECT_MODULE,
-    '%s.roku' % PROJECT_MODULE,
-    '%s.cronlogger' % PROJECT_MODULE,
-    '%s.webrtc' % PROJECT_MODULE,
-    '%s.staticpages' % PROJECT_MODULE,
-    '%s.new' % PROJECT_MODULE,
-    '%s.popcorn' % PROJECT_MODULE,
+    'airmozilla.base',
+    'airmozilla.main',
+    'airmozilla.authentication',
+    'airmozilla.manage',
+    'airmozilla.suggest',
+    'airmozilla.search',
+    'airmozilla.comments',
+    'airmozilla.uploads',
+    'airmozilla.starred',
+    'airmozilla.subtitles',
+    'airmozilla.surveys',
+    'airmozilla.roku',
+    'airmozilla.cronlogger',
+    'airmozilla.staticpages',
+    'airmozilla.new',
+    'airmozilla.popcorn',
 
     'djcelery',
     'kombu.transport.django',
@@ -52,8 +64,32 @@ INSTALLED_APPS = (
     'django.contrib.flatpages',  # this can be deleted later
     'cronjobs',
     'raven.contrib.django.raven_compat',
+    'django_jinja',
     'django_nose',  # deliberately making this the last one
 )
+
+# Absolute path to the directory that holds media.
+MEDIA_ROOT = path('media')
+
+# URL that handles the media served from MEDIA_ROOT. Make sure to use a
+# trailing slash if there is a path component (optional in other cases).
+MEDIA_URL = '/media/'
+
+# Absolute path to the directory static files should be collected to.
+STATIC_ROOT = path('static')
+
+# URL prefix for static files
+STATIC_URL = '/static/'
+
+STATICFILES_FINDERS = (
+    'django.contrib.staticfiles.finders.FileSystemFinder',
+    'django.contrib.staticfiles.finders.AppDirectoriesFinder',
+    'pipeline.finders.PipelineFinder',
+)
+
+STATICFILES_STORAGE = 'pipeline.storage.PipelineCachedStorage'
+
+TEST_RUNNER = 'django_nose.NoseTestSuiteRunner'
 
 # Necessary so that test-utils doesn't try to execute some deprecated
 # functionality on the database connection.
@@ -63,21 +99,10 @@ SQL_RESET_SEQUENCES = False
 # thanks to Persona.
 PASSWORD_HASHERS = ('django.contrib.auth.hashers.UnsaltedMD5PasswordHasher',)
 
-# And this must be set according to funfactory but its value isn't important
-HMAC_KEYS = {'any': 'thing'}
-
 # our session storage is all memcache so using it instead of FallbackStorage
 # which uses CookieStorage by default so sessions are better
 MESSAGE_STORAGE = 'django.contrib.messages.storage.session.SessionStorage'
 
-# Because Jinja2 is the default template loader, add any non-Jinja templated
-# apps here:
-JINGO_EXCLUDE_APPS = [
-    'admin',
-    'registration',
-    'bootstrapform',
-    'browserid',
-]
 
 # Note that this is different when running tests.
 # You know in case you're debugging tests.
@@ -98,14 +123,19 @@ ALLOWED_BID = (
     'mozilla-japan.org',
 )
 
-# This is only needed when not in DEBUG mode
-# SITE_URL = 'http://127.0.0.1:8000'
-
 LOGIN_URL = '/login/'
 LOGIN_REDIRECT_URL = '/'
 LOGIN_REDIRECT_URL_FAILURE = '/login-failure/'
 
-TEMPLATE_CONTEXT_PROCESSORS += (
+
+_CONTEXT_PROCESSORS = (
+    'django.contrib.auth.context_processors.auth',
+    'django.core.context_processors.debug',
+    'django.core.context_processors.media',
+    'django.core.context_processors.request',
+    'session_csrf.context_processor',
+    'django.contrib.messages.context_processors.messages',
+
     'airmozilla.manage.context_processors.badges',
     'airmozilla.main.context_processors.base',
     'airmozilla.main.context_processors.nav_bar',
@@ -119,66 +149,52 @@ TEMPLATE_CONTEXT_PROCESSORS += (
     'airmozilla.starred.context_processors.stars',
 )
 
+TEMPLATES = [
+    {
+        'BACKEND': 'django_jinja.backend.Jinja2',
+        'APP_DIRS': True,
+        'OPTIONS': {
+            # Use jinja2/ for jinja templates
+            'app_dirname': 'jinja2',
+            # Don't figure out which template loader to use based on
+            # file extension
+            'match_extension': '',
+            # 'newstyle_gettext': True,
+            'context_processors': _CONTEXT_PROCESSORS,
+            'debug': False,
+            'undefined': 'jinja2.Undefined',
+            'extensions': [
+                'jinja2.ext.do',
+                'jinja2.ext.loopcontrols',
+                'jinja2.ext.with_',
+                'jinja2.ext.i18n',  # needed to avoid errors in django_jinja
+                'jinja2.ext.autoescape',
+                'django_jinja.builtins.extensions.CsrfExtension',
+                'django_jinja.builtins.extensions.StaticFilesExtension',
+                'django_jinja.builtins.extensions.DjangoFiltersExtension',
+                'pipeline.templatetags.ext.PipelineExtension',
+            ],
+            'globals': {
+                'browserid_info': 'django_browserid.helpers.browserid_info',
+                'browserid_login': 'django_browserid.helpers.browserid_login',
+                'browserid_logout': 'django_browserid.helpers.browserid_logout'
+            }
+        }
+    },
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [],  # what does this do?!
+        'APP_DIRS': True,
+        'OPTIONS': {
+            'debug': False,
+            'context_processors': _CONTEXT_PROCESSORS,
+        }
+    },
+]
+
 # Always generate a CSRF token for anonymous users.
 ANON_ALWAYS = True
 
-# Tells the extract script what files to look for L10n in and what function
-# handles the extraction. The Tower library expects this.
-# DOMAIN_METHODS['messages'] = [
-#     ('%s/**.py' % PROJECT_MODULE,
-#         'tower.management.commands.extract.extract_tower_python'),
-#     ('%s/**/templates/**.html' % PROJECT_MODULE,
-#         'tower.management.commands.extract.extract_tower_template'),
-#     ('templates/**.html',
-#         'tower.management.commands.extract.extract_tower_template'),
-# ],
-
-# # Use this if you have localizable HTML files:
-# DOMAIN_METHODS['lhtml'] = [
-#    ('**/templates/**.lhtml',
-#        'tower.management.commands.extract.extract_tower_template'),
-# ]
-
-# # Use this if you have localizable JS files:
-# DOMAIN_METHODS['javascript'] = [
-#    # Make sure that this won't pull in strings from external libraries you
-#    # may use.
-#    ('media/js/**.js', 'javascript'),
-# ]
-
-# This disables all mail_admins on all django.request errors.
-# We can do this because we use Sentry now instead
-LOGGING = {
-    'loggers': {
-        'django.request': {
-            'handlers': []
-        }
-    }
-}
-
-
-def JINJA_CONFIG():
-    # different from that in funfactory in that we don't want to
-    # load the `tower` extension
-    config = {
-        'extensions': [
-            'jinja2.ext.do',
-            'jinja2.ext.with_',
-            'jinja2.ext.loopcontrols'
-        ],
-        'finalize': lambda x: x if x is not None else '',
-    }
-    # config = funfactory_JINJA_CONFIG()
-    # config['extensions'].remove('tower.template.i18n')
-    return config
-
-
-def COMPRESS_JINJA2_GET_ENVIRONMENT():
-    from jingo import env
-    from compressor.contrib.jinja2ext import CompressorExtension
-    env.add_extension(CompressorExtension)
-
-    return env
 
 # Remove localization middleware
 MIDDLEWARE_CLASSES = (
@@ -229,10 +245,6 @@ COOKIES_SECURE = True
 
 # URL to connect to ElasticSearch
 ELASTICSEARCH_URL = 'http://localhost:9200/'
-
-# This is here in order to override the code related to elastic search
-# once things are said and done, ie. it works, this will be deleted
-USE_RELATED_CONTENT = False
 
 # Number of related events to display (max)
 RELATED_CONTENT_SIZE = 4
@@ -292,7 +304,7 @@ try:
     # ujson is a much faster json serializer
     # We tell the django-jsonview decorator to use it only if the ujson
     # package is installed and can be imported
-    import ujson
+    import ujson  # NOQA
     JSON_MODULE = 'ujson'
     JSON_USE_DJANGO_SERIALIZER = False
 except ImportError:
@@ -326,17 +338,12 @@ CONTRIBUTORS = (
     'anuragchaudhury',
     'gloriadwomoh',
     'a-buck',
+    'anjalymehla',
+    'julian.alexander.murillo',
 )
 
 # Override this if you want to run the selenium based tests
 RUN_SELENIUM_TESTS = False
-
-
-# Whether we should use the new upload nav bar item.
-# Once the new upload is fully tested and ready to go live we might as
-# well delete this setting and remove the if-statement in
-# main.context_processors.nav_bar.
-USE_NEW_UPLOADER = True
 
 
 # When enabled, together with DEBUG==True, by visiting /god-mode/ you
@@ -379,3 +386,13 @@ NOTIFICATIONS_GROUP_NAME = 'Event Notifications'
 # Adding prefix to airmozilla events index
 ELASTICSEARCH_PREFIX = 'airmozilla'
 ELASTICSEARCH_INDEX = 'events'
+
+# legacy junk in settings/local.py on production deployments
+BASE_PASSWORD_HASHERS = HMAC_KEYS = []
+
+YOUTUBE_API_KEY = None
+
+# You have to run `npm install` for this to be installed in `./node_modules`
+PIPELINE_YUGLIFY_BINARY = path('node_modules/.bin/yuglify')
+
+POPCORN_EDITOR_CDN_URL = "//d2edlhmcxlovf.cloudfront.net"

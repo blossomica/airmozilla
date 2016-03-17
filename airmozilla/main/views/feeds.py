@@ -1,4 +1,3 @@
-import random
 from collections import defaultdict
 
 from django.conf import settings
@@ -7,12 +6,12 @@ from django.utils.feedgenerator import Rss201rev2Feed
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.db.models import Q
+from django.core.urlresolvers import reverse
 
-from funfactory.urlresolvers import reverse
-
-from airmozilla.main.models import Event, Channel, Tag
+from airmozilla.main.models import Event, Channel, Tag, VidlyMedia
+from airmozilla.search.models import SavedSearch
 from airmozilla.base.utils import get_base_url, get_abs_static
-from airmozilla.main.helpers import short_desc, thumbnail
+from airmozilla.main.templatetags.jinja_helpers import short_desc, thumbnail
 from airmozilla.manage import vidly
 
 
@@ -41,7 +40,7 @@ class EventsFeed(Feed):
 
     def get_object(self, request, private_or_public='',
                    channel_slug=settings.DEFAULT_CHANNEL_SLUG,
-                   format_type=None):
+                   format_type=None, not_channel_slug=None):
         if private_or_public == 'private':
             # old URL
             private_or_public = 'company'
@@ -49,6 +48,18 @@ class EventsFeed(Feed):
         self.format_type = format_type
         self._root_url = get_base_url(request)
         self._channel = get_object_or_404(Channel, slug=channel_slug)
+        self._not_channel = None
+        if request.GET.get('ss'):
+            self._savedsearch = get_object_or_404(
+                SavedSearch, id=request.GET['ss']
+            )
+        else:
+            self._savedsearch = None
+        if not_channel_slug:
+            self._not_channel = get_object_or_404(
+                Channel,
+                slug=not_channel_slug,
+            )
 
     def link(self):
         return self._root_url + '/'
@@ -65,21 +76,26 @@ class EventsFeed(Feed):
 
     def items(self):
         now = timezone.now()
-        qs = (
-            Event.objects.scheduled_or_processing()
-            .filter(start_time__lt=now,
-                    channels=self._channel)
-            .order_by('-start_time')
-        )
+        if self._savedsearch:
+            qs = self._savedsearch.get_events()
+        else:
+            qs = (
+                Event.objects.scheduled_or_processing()
+                .filter(channels=self._channel)
+            )
+        qs = qs.filter(start_time__lt=now).order_by('-start_time')
+
+        if self._not_channel:
+            qs = qs.exclude(channels=self._not_channel)
         if not self.private_or_public or self.private_or_public == 'public':
             qs = qs.approved()
             qs = qs.filter(privacy=Event.PRIVACY_PUBLIC)
         elif self.private_or_public == 'contributors':
             qs = qs.exclude(privacy=Event.PRIVACY_COMPANY)
-        return qs[:settings.FEED_SIZE]
+        return qs[:self._channel.feed_size]
 
     def item_title(self, event):
-        return event.title
+        return event.get_unique_title()
 
     def item_link(self, event):
         if self.format_type in ('webm', 'mp4'):
@@ -144,17 +160,13 @@ class ITunesElements(object):
         handler.addQuickElement('itunes:subtitle', item['subtitle'])
         handler.addQuickElement('itunes:summary', item['summary'])
 
-        data = vidly.get_video_redirect_info(
-            item['vidly_tag'],
-            'mp4',
-            hd=True,  # Maybe this should depend on VidlySubmission
-        )
+        data = item['vidly_data']
         handler.addQuickElement('enclosure', attrs={
-            'url': data['url'],
-            'length': data['length'],
-            'type': data['type'],
+            'url': data.url,
+            'length': str(data.size),
+            'type': data.content_type,
         })
-        handler.addQuickElement('guid', data['url'], attrs={
+        handler.addQuickElement('guid', data.url, attrs={
             'isPermaLink': 'false'}
         )
 
@@ -193,14 +205,14 @@ class ITunesFeed(EventsFeed):
     def title(self):
         title = 'Air Mozilla'
         if self.channel.slug != settings.DEFAULT_CHANNEL_SLUG:
-            title = '{} on {}'.format(
+            title = u'{} on {}'.format(
                 self.channel.name,
                 title,
             )
         if self._root_url != 'https://air.mozilla.org':
             # This extra title makes it easier for us to test the
             # feed on stage and dev etc.
-            title += ' ({})'.format(self._root_url)
+            title += u' ({})'.format(self._root_url)
         return title
 
     def get_object(self, request, channel_slug=None):
@@ -256,7 +268,7 @@ class ITunesFeed(EventsFeed):
             .filter(template_environment__contains='tag')
             .exclude(duration__isnull=True)
             .order_by('-start_time')
-        )[:settings.FEED_SIZE]
+        )[:self.channel.feed_size]
 
         all_tag_ids = set()
         self.all_tags = defaultdict(list)
@@ -281,18 +293,15 @@ class ITunesFeed(EventsFeed):
         items = []
         for event in qs:
             try:
-                vidly_redirect_info = vidly.get_video_redirect_info(
+                vidly_media = VidlyMedia.get_or_create(
                     event.template_environment['tag'],
                     'mp4',
                     hd=True,
-                    # We deliberately make the expiry date a bit random.
-                    # This is to prevent the cache to expiry on all of them
-                    # at the same time, but instead only some being expired.
-                    expires=60 * 60 + 60 * random.randint(1, 10)
                 )
             except vidly.VidlyNotFoundError:
+                print "vidlynotfounderror :(", repr(event)
                 continue
-            event._vidly_redirect_info = vidly_redirect_info
+            event._vidly_media = vidly_media
             items.append(event)
         return items
 
@@ -311,6 +320,9 @@ class ITunesFeed(EventsFeed):
     def item_description(self, event):
         return event.description
 
+    def item_title(self, event):
+        return event.get_unique_title()
+
     def item_author_name(self, event):  # override the super
         return None
 
@@ -320,7 +332,7 @@ class ITunesFeed(EventsFeed):
             'subtitle': short_desc(event),
             'summary': event.description,
             'duration': event.duration,
-            'vidly_data': event._vidly_redirect_info,
+            'vidly_data': event._vidly_media,
             'vidly_tag': event.template_environment['tag'],
             'tags': self.all_tags.get(event.id, []),
         }

@@ -56,11 +56,16 @@ need to install XCode and on Linux you'll need to install `python-dev`.
 [This article on pyladies.com](http://www.pyladies.com/blog/Get-Your-Mac-Ready-for-Python-Programming/)
 has a lot of useful information.
 
-Once you have a virtualenv you want to use, you need to install all the
+Make sure that your `pip` in your `virtualenv` is version 8 or higher! To
+check it might look like this:
+
+    $ pip --version
+    pip 8.0.2 from /Users/peterbe/virtualenvs/airmozilla/lib/python2.7/site-packages (python 2.7)
+
+Once you have a `virtualenv` you want to use, you need to install all the
 dependencies. You do this with:
 
-    pip install bin/peep-2.4.1.tar.gz
-    peep install -r requirements.txt
+    pip install -r requirements.txt
     pip install -r dev-requirements.txt
 
 The second file is necessary so you can
@@ -70,18 +75,11 @@ The second file is necessary so you can
 Note: We're assuming you have already activated a `virtualenv` which will
 have its own `pip`.
 
-Note 2: Windows users, before you start cloning you need to make sure you're not going to
-use the git protocol to clone any submodule, otherwise you will get ``fatal: read error: Invalid argument``
-errors.
-
-```
-git config --global url."https://".insteadOf git://
-```
-
 ```
 git clone https://github.com/mozilla/airmozilla.git
 cd airmozilla
 pip install -r requirements.txt
+pip install -r dev-requirements.txt
 ```
 
 **Step 3 - Create a database**
@@ -179,6 +177,9 @@ this. So uncomment the line `EMAIL_BACKEND` to:
 ```
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 ```
+
+**Note!** See below on **How to Debug Emails** for a more extensive
+exploration on this.
 
 The majority of the remaining settings are important security details for
 third-party services like AWS, Vid.ly, Mozillians, Twitter, Bit.ly and
@@ -457,7 +458,7 @@ h2.summary {
 Getting help
 ------------
 
-The best place to get help on development is to go the the `#airmozilla-dev`
+The best place to get help on development is to go to the `#airmozilla-dev`
 IRC channel on `irc.mozilla.org`.
 
 
@@ -538,10 +539,21 @@ Another common mistake is to *not* have `SESSION_COOKIE_SECURE = False` in your
 `airmozilla/settings/local.py` but using `http://localhost:8000` to reach
 the site.
 
-### Tests are not working
+### Tests are slow
 
-If tests don't work around code you didn't touch, it might be that your test
-database is out-of-sync so then next time simply run: `FORCE_DB=1 ./manage.py test`.
+By default when you run `./manage.py test ...` it will re-create the
+database for every run. This takes 5-10 seconds extra time every time.
+If you know that the testing process doesn't involve any complexities
+in terms of migrations, you can speed up the tests a lot by setting
+the environment variable `REUSE_DB=1`. For example like this:
+
+    REUSE_DB=1 ./manage.py test
+
+Or to make it stick, use:
+
+    export REUSE_DB=1
+    ./manage.py test
+
 
 Migrations
 ----------
@@ -671,6 +683,29 @@ You should now see your video in the Event manager
 (`http://localhost:8000/manage/events/`) and on the main page
 (`http://localhost:8000/`)!
 
+
+How to Debug Emails
+-------------------
+
+Air Mozilla depends on pretty emails to be sent to real people. To debug
+these emails that we send, you don't want to have to rely on actually
+sending them for reals.
+
+To get actual `.eml` files (that can be opened with Mail, Airmail or
+Thunderbird) on your file system, add this to your
+`airmozilla/settings/local.py`:
+
+```python
+EMAIL_BACKEND = 'airmozilla.base.utils.EmlEmailBackend'
+EMAIL_FILE_PATH = '/tmp/captured-emails/'
+```
+
+Now, to actually send some emails, you can either click around and perform
+various actions that trigger sending an email. Then you can inspect the files
+that get created in that directory set `EMAIL_FILE_PATH` to.
+*Or*, you log in to the management pages as a superuser and click the
+"Email Sending" tool in the bottom of the navigation bar.
+
 Contributing
 ------------
 
@@ -765,7 +800,7 @@ for Python is expected to be under 80 characters wide.
 The help yourself enforce this automatically, you need to set up the following
 git hooks. First, in your virtualenv, install this:
 
-    pip install flake8
+    pip install -U flake8
 
 Next you need to create (or amend) the file:
 

@@ -17,8 +17,8 @@ from django.utils.timezone import utc
 from django.conf import settings
 from django.core.cache import cache
 from django.core.files import File
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
+from django.utils.encoding import smart_text
 
 from airmozilla.main.models import (
     Approval,
@@ -36,13 +36,16 @@ from airmozilla.main.models import (
     EventLiveHits,
     Chapter,
 )
+from airmozilla.search.models import SavedSearch
 from airmozilla.surveys.models import Survey, Question, next_question_order
 from airmozilla.staticpages.models import StaticPage
 from airmozilla.base.tests.test_mozillians import (
     Response,
     GROUPS1,
     GROUPS2,
-    VOUCHED_FOR
+    VOUCHED_FOR,
+    VOUCHED_FOR_USERS,
+    NO_USERS,
 )
 from airmozilla.base.tests.testbase import DjangoTestCase
 
@@ -61,8 +64,20 @@ class TestPages(DjangoTestCase):
             slug=settings.DEFAULT_CHANNEL_SLUG
         )
 
-    def _calendar_url(self, privacy, location=None):
-        url = reverse('main:calendar_ical', args=(privacy,))
+    def _calendar_url(
+        self,
+        privacy,
+        location=None,
+        channel_slug=None,
+        savedsearch=None
+    ):
+        if channel_slug:
+            url = reverse(
+                'main:calendar_channel_ical',
+                args=(privacy, channel_slug)
+            )
+        else:
+            url = reverse('main:calendar_ical', args=(privacy,))
         if location:
             if isinstance(location, int):
                 url += '?location=%s' % location
@@ -70,6 +85,9 @@ class TestPages(DjangoTestCase):
                 if not isinstance(location, int) and 'name' in location:
                     location = location.name
                 url += '?location=%s' % urllib.quote_plus(location)
+        if savedsearch:
+            url += '?' in url and '&' or '?'
+            url += 'ss={}'.format(savedsearch)
         return url
 
     def test_contribute_json(self):
@@ -176,6 +194,36 @@ class TestPages(DjangoTestCase):
         ok_(can_view_event(event, contributor))
         ok_(can_view_event(event, employee_wo_profile))
         ok_(can_view_event(event, employee_w_profile))
+
+    def test_view_event_with_unique_title(self):
+        event = Event.objects.get(title='Test event')
+        url = reverse('main:event', args=(event.slug,))
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        title_regex = re.compile('<title>([^<]+)')
+        og_title_regex = re.compile(
+            'property="og:title" content="([^"]+)"'
+        )
+        title = title_regex.findall(response.content)[0].strip()
+        og_title = og_title_regex.findall(response.content)[0].strip()
+        eq_(title, event.title + ' | Air Mozilla | Mozilla, in Video')
+        eq_(og_title, event.title)
+
+        # create a dupe
+        Event.objects.create(
+            title=event.title,
+            slug='other',
+            start_time=timezone.now(),
+        )
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        title_2 = title_regex.findall(response.content)[0].strip()
+        og_title_2 = og_title_regex.findall(response.content)[0].strip()
+        ok_(title != title_2)
+        ok_(og_title != og_title_2)
+        timestamp = event.location_time.strftime('%d %b %Y')
+        ok_(timestamp in title_2)
+        ok_(timestamp in og_title_2)
 
     def test_view_event_with_pin(self):
         cache.clear()
@@ -382,6 +430,18 @@ class TestPages(DjangoTestCase):
         response_ok = self.client.get(event_page)
         eq_(response_ok.status_code, 200)
 
+    def test_view_event_by_event_id(self):
+        assert not Event.objects.filter(id=9999).exists()
+        url = reverse('main:event', args=('9999',))
+        response = self.client.get(url)
+        eq_(response.status_code, 404)
+
+        event = Event.objects.get(title='Test event')
+        url = reverse('main:event', args=(event.id,))
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('<title>{}'.format(event.title) in response.content)
+
     def test_view_event_channels(self):
         event = Event.objects.get(title='Test event')
 
@@ -445,6 +505,24 @@ class TestPages(DjangoTestCase):
         response = self.client.get(url, {'autoplay': '1'})
         eq_(response.status_code, 200)
         ok_('autoplay=false' in response.content)
+
+    def test_view_event_with_poster_url_in_template(self):
+        event = Event.objects.get(title='Test event')
+        template = Template.objects.create(
+            name="My Template",
+            content=(
+                '<video poster="{{ poster_url() }}"></video>'
+            )
+        )
+        event.template = template
+        event.template_environment = {}
+        event.save()
+        url = reverse('main:event', kwargs={'slug': event.slug})
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        poster_url = re.findall('<video poster="(.*)">', response.content)[0]
+        ok_(poster_url.endswith('.png'))
+        ok_(poster_url.startswith(settings.MEDIA_URL))
 
     def test_event_with_vidly_download_links(self):
         cache.clear()  # we don't want past vidly info cache to affect
@@ -668,6 +746,113 @@ class TestPages(DjangoTestCase):
         ok_('Test event' in response.content)
         ok_('Second test event' not in response.content)
 
+    def test_calendar_by_channel(self):
+
+        event1 = Event.objects.get(title='Test event')
+        # know your fixtures
+        assert event1.location.name == 'Mountain View'
+
+        event2 = Event.objects.create(
+            title='Second test event',
+            description='Anything',
+            start_time=event1.start_time,
+            archive_time=event1.archive_time,
+            privacy=Event.PRIVACY_PUBLIC,
+            status=event1.status,
+            placeholder_img=event1.placeholder_img,
+            location=event1.location
+        )
+        event2.channels.add(self.main_channel)
+        parent_channel = Channel.objects.create(name='Parent', slug='parent')
+        sub_channel = Channel.objects.create(
+            name='Sub',
+            slug='sub',
+            parent=parent_channel,
+        )
+
+        url = self._calendar_url('public', channel_slug='xxx')
+        response = self.client.get(url)
+        eq_(response.status_code, 404)
+
+        url = self._calendar_url('public', channel_slug='main')
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('Test event' in response.content)
+        ok_('Second test event' in response.content)
+
+        url = self._calendar_url('public', channel_slug='parent')
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('Test event' not in response.content)
+        ok_('Second test event' not in response.content)
+
+        event2.channels.add(sub_channel)
+        cache.clear()
+        url = self._calendar_url('public', channel_slug='parent')
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('Test event' not in response.content)
+        ok_('Second test event' in response.content)
+
+        url = self._calendar_url('public', channel_slug='sub')
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('Test event' not in response.content)
+        ok_('Second test event' in response.content)
+
+    def test_calendar_by_savedsearch(self):
+        event1 = Event.objects.get(title='Test event')
+        event2 = Event.objects.create(
+            title='Second test event',
+            description='Anything',
+            start_time=event1.start_time,
+            archive_time=event1.archive_time,
+            privacy=Event.PRIVACY_PUBLIC,
+            status=event1.status,
+            placeholder_img=event1.placeholder_img,
+            location=event1.location
+        )
+        channel = Channel.objects.create(name='Channel', slug='channel')
+        event2.channels.add(channel)
+
+        savedsearch = SavedSearch.objects.create(
+            user=User.objects.create(username='notimportant'),
+            filters={
+                'title': {
+                    'include': 'TEST'
+                }
+            }
+        )
+
+        url = self._calendar_url('public', savedsearch=999999)
+        response = self.client.get(url)
+        eq_(response.status_code, 404)
+
+        url = self._calendar_url('public', savedsearch=savedsearch.id)
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('Test event' in response.content)
+        ok_('Second test event' in response.content)
+
+        # If we change the saved search, it should update the feed
+        # automatically.
+        savedsearch.filters['title']['include'] = 'SECOND'
+        savedsearch.save()
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('Test event' not in response.content)
+        ok_('Second test event' in response.content)
+
+        # change this back and mess with the channel
+        savedsearch.filters['title']['include'] = 'Test'
+        savedsearch.filters['channels'] = {'exclude': [channel.id]}
+        savedsearch.save()
+
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('Test event' in response.content)
+        ok_('Second test event' not in response.content)
+
     def test_calendars_page(self):
         london = Location.objects.create(
             name='London',
@@ -719,9 +904,10 @@ class TestPages(DjangoTestCase):
         url_all = self._calendar_url('contributors')
         url_lon = self._calendar_url('contributors', london.pk)
         url_mv = self._calendar_url('contributors', event1.location.pk)
-        ok_(url_all in response.content)
-        ok_(url_lon in response.content)
-        ok_(url_mv in response.content)
+        response_content = response.content.decode('utf-8')
+        ok_(url_all in response_content)
+        ok_(url_lon in response_content)
+        ok_(url_mv in response_content)
 
         # now log in as an employee
         User.objects.create_user(
@@ -734,9 +920,10 @@ class TestPages(DjangoTestCase):
         url_all = self._calendar_url('company')
         url_lon = self._calendar_url('company', london.pk)
         url_mv = self._calendar_url('company', event1.location.pk)
-        ok_(url_all in response.content)
-        ok_(url_lon in response.content)
-        ok_(url_mv in response.content)
+        response_content = response.content.decode('utf-8')
+        ok_(url_all in response_content)
+        ok_(url_lon in response_content)
+        ok_(url_mv in response_content)
 
     def test_calendars_page_locations_disappear(self):
         london = Location.objects.create(
@@ -943,7 +1130,8 @@ class TestPages(DjangoTestCase):
         event.save()
         response = self.client.get(url)
         ok_(
-            'Google <a href="http://google.com">http://google.com</a>' in
+            'Google <a href="http://google.com" rel="nofollow">'
+            'http://google.com</a>' in
             response.content
         )
 
@@ -954,8 +1142,10 @@ class TestPages(DjangoTestCase):
         response = self.client.get(url)
 
         ok_(
-            'Google <a href="http://google.com">http://google.com</a><br>'
-            'Yahii <a href="http://yahii.com">http://yahii.com</a>'
+            'Google <a href="http://google.com" rel="nofollow">'
+            'http://google.com</a><br />'
+            'Yahii <a href="http://yahii.com" rel="nofollow"'
+            '>http://yahii.com</a>'
             in response.content
         )
 
@@ -1027,8 +1217,9 @@ class TestPages(DjangoTestCase):
         assert not event.is_live()
         response = self.client.get(url)
         eq_(response.status_code, 200)
-        ok_('Chapters' in response.content)
-        ok_(edit_url in response.content)
+        response_content = response.content.decode('utf-8')
+        ok_('Chapters' in response_content)
+        ok_(edit_url in response_content)
 
     @mock.patch('airmozilla.manage.vidly.urllib2.urlopen')
     def test_event_with_vidly_token_urlerror(self, p_urlopen):
@@ -2056,7 +2247,7 @@ class TestPages(DjangoTestCase):
         eq_(response.status_code, 200)
         head = response.content.split('</head>')[0]
         ok_('<meta property="og:title" content="%s">' % event.title in head)
-        from airmozilla.main.helpers import short_desc
+        from airmozilla.main.templatetags.jinja_helpers import short_desc
         ok_(
             '<meta property="og:description" content="%s">' % short_desc(event)
             in head
@@ -2301,14 +2492,17 @@ class TestPages(DjangoTestCase):
     @mock.patch('requests.get')
     def test_view_curated_group_event(self, rget, rlogging):
 
+        calls = []
+
         def mocked_get(url, **options):
+            calls.append(url)
             if 'peterbe' in url:
-                return Response(VOUCHED_FOR)
-            if 'offset=0' in url:
-                return Response(GROUPS1)
-            if 'offset=500' in url:
-                return Response(GROUPS2)
+                if 'group=vip' in url:
+                    return Response(NO_USERS)
+                else:
+                    return Response(VOUCHED_FOR_USERS)
             raise NotImplementedError(url)
+
         rget.side_effect = mocked_get
 
         # sign in as a contributor
@@ -2338,7 +2532,7 @@ class TestPages(DjangoTestCase):
 
         response = self.client.get(url)
         eq_(response.status_code, 200)
-        ok_(event.title in response.content)
+        ok_(event.title in smart_text(response.content))
 
         # make it so that viewing the event requires that you're a
         # certain group
@@ -2431,7 +2625,7 @@ class TestPages(DjangoTestCase):
 
         response = self.client.get(url)
         eq_(response.status_code, 200)
-        ok_(event.title in response.content)
+        ok_(event.title in smart_text(response.content))
 
         # make it so that viewing the event requires that you're a
         # certain group
@@ -2442,7 +2636,7 @@ class TestPages(DjangoTestCase):
         )
         response = self.client.get(url)
         eq_(response.status_code, 200)
-        ok_(event.title in response.content)
+        ok_(event.title in smart_text(response.content))
 
     def test_view_removed_event(self):
         event = Event.objects.get(title='Test event')
@@ -2465,19 +2659,20 @@ class TestPages(DjangoTestCase):
         response = self.client.get(url)
         eq_(response.status_code, 200)
         ok_('This event is no longer available.' in response.content)
-        ok_(event.title in response.content)
+        ok_(event.title in smart_text(response.content))
 
         # but if signed in as a superuser, you can view it
         user.is_superuser = True
         user.save()
         response = self.client.get(url)
         eq_(response.status_code, 200)
-        ok_('This event is no longer available.' not in response.content)
-        ok_(event.title in response.content)
+        content = smart_text(response.content)
+        ok_('This event is no longer available.' not in content)
+        ok_(event.title in content)
         # but there is a flash message warning on the page that says...
         ok_(
             'Event is not publicly visible - not scheduled.'
-            in response.content
+            in content
         )
 
     def test_edgecast_smil(self):
@@ -2655,7 +2850,8 @@ class TestPages(DjangoTestCase):
         response = self.client.get(url)
         eq_(response.status_code, 200)
         # but it doesn't appear because it has no pictures
-        ok_(edit_url not in response.content)
+        response_content = response.content.decode('utf-8')
+        ok_(edit_url not in response_content)
 
         with open(self.main_image) as fp:
             picture = Picture.objects.create(
@@ -2673,14 +2869,16 @@ class TestPages(DjangoTestCase):
         response = self.client.get(url)
         eq_(response.status_code, 200)
         # but it doesn't appear because it has no pictures
-        ok_(edit_url in response.content)
+        response_content = response.content.decode('utf-8')
+        ok_(edit_url in response_content)
 
         event.picture = picture2
         event.save()
         # now it shouldn't be offered because it already has a picture
         response = self.client.get(url)
         eq_(response.status_code, 200)
-        ok_(edit_url not in response.content)
+        response_content = response.content.decode('utf-8')
+        ok_(edit_url not in response_content)
 
     def test_unpicked_pictures_contributor(self):
         event = Event.objects.get(title='Test event')
@@ -2706,21 +2904,24 @@ class TestPages(DjangoTestCase):
         )
         response = self.client.get(url)
         eq_(response.status_code, 200)
-        ok_(edit_url in response.content)
+        response_content = response.content.decode('utf-8')
+        ok_(edit_url in response_content)
 
         # and it should continue to be offered if the event is...
         event.privacy = Event.PRIVACY_CONTRIBUTORS
         event.save()
         response = self.client.get(url)
         eq_(response.status_code, 200)
-        ok_(edit_url in response.content)
+        response_content = response.content.decode('utf-8')
+        ok_(edit_url in response_content)
 
         # but not if it's only company
         event.privacy = Event.PRIVACY_COMPANY
         event.save()
         response = self.client.get(url)
         eq_(response.status_code, 200)
-        ok_(edit_url not in response.content)  # note the not
+        response_content = response.content.decode('utf-8')
+        ok_(edit_url not in response_content)  # note the not
 
     def test_hd_download_links(self):
         event = Event.objects.get(title='Test event')
@@ -2782,25 +2983,41 @@ class TestPages(DjangoTestCase):
     @mock.patch('requests.get')
     def test_contributors_page(self, rget):
 
+        calls = []
+
         def mocked_get(url, **options):
-            # we need to deconstruct the NO_VOUCHED_FOR fixture
-            # and put it together with some dummy data
-            result = json.loads(VOUCHED_FOR)
-            objects = result['objects']
-            assert len(objects) == 1
-            objects[0]['username'] = 'peterbe'
-            cp = copy.copy(objects[0])
-            cp['username'] = 'nophoto'
-            cp['photo'] = ''
-            objects.append(cp)
-            cp = copy.copy(cp)
-            cp['username'] = 'notvouched'
-            cp['photo'] = 'http://imgur.com/a.jpg'
-            cp['is_vouched'] = False
-            objects.append(cp)
-            result['objects'] = objects
-            assert len(objects) == 3
-            return Response(json.dumps(result))
+            # This will get used 3 times.
+            # 1st time to query for all users in the group.
+            # 2nd time to get the details for the first user
+            # 3nd time to get the details for the second user
+            calls.append(url)
+
+            if '/users/99999' in url:
+                return Response(VOUCHED_FOR)
+
+            if '/users/88888' in url:
+                result = json.loads(VOUCHED_FOR)
+                result['username'] = 'nophoto'
+                result['photo']['privacy'] = 'Mozillians'
+                result['url'] = result['url'].replace('peterbe', 'nophoto')
+                return Response(json.dumps(result))
+
+            if '?group=air+mozilla+contributors' in url:
+                # we need to deconstruct the VOUCHED_FOR_USERS fixture
+                # and put it together with some dummy data
+                result = json.loads(VOUCHED_FOR_USERS)
+                results = result['results']
+                assert len(results) == 1
+                assert results[0]['username'] == 'peterbe'  # know thy fixtures
+                cp = copy.copy(results[0])  # deep copy
+                cp['username'] = 'nophoto'
+                cp['_url'] = cp['_url'].replace('/99999', '/88888')
+                results.append(cp)
+
+                assert len(results) == 2
+                return Response(json.dumps(result))
+
+            raise NotImplementedError(url)
 
         rget.side_effect = mocked_get
 
@@ -2814,9 +3031,16 @@ class TestPages(DjangoTestCase):
         with self.settings(CONTRIBUTORS=contributors):
             response = self.client.get(url)
             eq_(response.status_code, 200)
-            user = json.loads(VOUCHED_FOR)['objects'][0]
-            ok_(user['full_name'] in response.content)
-            ok_(user['url'] in response.content)
+            ok_(
+                'href="https://muzillians.fake/en-US/u/peterbe/"' in
+                response.content
+            )
+            ok_(
+                'href="https://muzillians.fake/en-US/u/nophoto/"' not in
+                response.content
+            )
+
+            assert len(calls) == 3
 
     def test_event_duration(self):
         event = Event.objects.get(title='Test event')
@@ -3079,7 +3303,7 @@ class TestPages(DjangoTestCase):
         response = self.client.get('/')
         eq_(response.status_code, 200)
         ok_('Streaming Live Now' in response.content)
-        ok_(event.title in response.content)
+        ok_(event.title in unicode(response.content, 'utf-8'))
 
     def test_thumbnails(self):
         event = Event.objects.get(title='Test event')

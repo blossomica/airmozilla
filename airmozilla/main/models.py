@@ -10,10 +10,12 @@ from django.db import models
 from django.dispatch import receiver
 from django.utils import timezone
 from django.db.models import Q
+from django.utils.encoding import smart_text
 
-from airmozilla.base.utils import unique_slugify
+from airmozilla.base.utils import unique_slugify, roughly
 from airmozilla.main.fields import EnvironmentField
 from airmozilla.manage.utils import filename_to_notes
+from airmozilla.manage.vidly import get_video_redirect_info
 
 import pytz
 from sorl.thumbnail import ImageField
@@ -120,6 +122,8 @@ class Channel(models.Model):
         null=True,
         blank=True
     )
+    feed_size = models.PositiveIntegerField(default=20)
+    youtube_id = models.CharField(max_length=100, null=True)
 
     class Meta:
         ordering = ['name']
@@ -129,6 +133,11 @@ class Channel(models.Model):
 
     def get_children(self):
         return Channel.objects.filter(parent=self)
+
+    @property
+    def youtube_url(self):
+        assert self.youtube_id
+        return 'https://www.youtube.com/channel/{}'.format(self.youtube_id)
 
 
 class Tag(models.Model):
@@ -146,9 +155,11 @@ class Template(models.Model):
     content = models.TextField(
         help_text='The HTML framework for this template.  Use'
         ' <code>{{ any_variable_name }}</code> for per-event'
-        ' tags. Other Jinja2 constructs are available, along with the related'
+        ' tags. Other Jinja constructs are available, along with the related'
         ' <code>request</code>, <code>datetime</code>, <code>event</code> '
-        ' objects, <code>popcorn_url</code> and the <code>md5</code> function.'
+        ' objects, and the <code>md5</code> function. There is also the '
+        ' <code>poster_url</code> variable which is the full URL to the '
+        ' poster of the event.<br>'
         ' You can also reference <code>autoplay</code> and it\'s always safe.'
         ' Additionally we have <code>vidly_tokenize(tag, seconds)</code>,'
         ' <code>edgecast_tokenize([seconds], **kwargs)</code> and '
@@ -224,8 +235,8 @@ class RecruitmentMessage(models.Model):
 
     modified_user = models.ForeignKey(User, null=True,
                                       on_delete=models.SET_NULL)
-    created = models.DateTimeField(default=_get_now)
-    modified = models.DateTimeField(auto_now=True, default=_get_now)
+    created = models.DateTimeField(auto_now_add=True)
+    modified = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ['text']
@@ -250,10 +261,10 @@ class EventManager(models.Manager):
         return ApprovableQuerySet(self.model, using=self._db)
 
     def scheduled(self):
-        return self.get_query_set().filter(status=Event.STATUS_SCHEDULED)
+        return self.get_queryset().filter(status=Event.STATUS_SCHEDULED)
 
     def scheduled_or_processing(self):
-        return self.get_query_set().filter(
+        return self.get_queryset().filter(
             Q(status=Event.STATUS_SCHEDULED) |
             Q(status=Event.STATUS_PROCESSING)
         )
@@ -271,7 +282,7 @@ class EventManager(models.Manager):
         )
 
     def live(self):
-        return self.get_query_set().filter(
+        return self.get_queryset().filter(
             status=Event.STATUS_SCHEDULED,
             archive_time=None,
             start_time__lt=_get_live_time()
@@ -383,7 +394,6 @@ class Event(models.Model):
         default=60 * 60,  # seconds
         null=True,
     )
-    mozillian = models.CharField(max_length=200, null=True)
     creator = models.ForeignKey(User, related_name='creator', blank=True,
                                 null=True, on_delete=models.SET_NULL)
     created = models.DateTimeField(auto_now_add=True)
@@ -449,6 +459,39 @@ class Event(models.Model):
         tz = pytz.timezone(self.location.timezone)
         return tz.normalize(self.start_time)
 
+    def has_unique_title(self):
+        return not (
+            Event.objects
+            .filter(title=self.title)
+            .exclude(id=self.id)
+            .exists()
+        )
+
+    def get_unique_title(self):
+        cache_key = 'unique_title_{}'.format(self.id)
+        value = cache.get(cache_key)
+        if value is None:
+            value = self._get_unique_title()
+            cache.set(cache_key, value, roughly(60 * 60 * 5))
+        else:
+            # When it comes out of memcache (not LocMemCache) it comes
+            # out as a byte string. smart_text() always returns a
+            # unicode string even if you pass in a unicode string.
+            value = smart_text(value)
+        return value
+
+    def _get_unique_title(self):
+        if self.has_unique_title():
+            return self.title
+        else:
+            start_time = self.start_time
+            if self.location:
+                start_time = self.location_time
+            return u'{}, {}'.format(
+                self.title,
+                start_time.strftime('%d %b %Y')
+            )
+
 
 def most_recent_event():
     cache_key = 'most_recent_event'
@@ -471,6 +514,13 @@ def reset_event_status_cache(sender, instance, **kwargs):
         hashlib.md5(instance.slug).hexdigest()
     )
     cache.delete(cache_key)
+
+
+@receiver(models.signals.post_save, sender=Event)
+def reset_event_unique_title(sender, instance, **kwargs):
+    for event in Event.objects.filter(title=instance.title):
+        cache_key = 'unique_title_{}'.format(event.id)
+        cache.delete(cache_key)
 
 
 class EventEmail(models.Model):
@@ -529,11 +579,16 @@ class EventRevision(models.Model):
 
 class EventAssignment(models.Model):
 
-    event = models.ForeignKey(Event, unique=True)
+    event = models.OneToOneField(Event)
     locations = models.ManyToManyField(Location)
     users = models.ManyToManyField(User)
     created = models.DateTimeField(default=_get_now)
     modified = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        permissions = (
+            ('can_be_assigned', 'Can be assigned to events'),
+        )
 
 
 class CuratedGroup(models.Model):
@@ -572,7 +627,14 @@ def invalidate_curated_group_names(sender, instance, **kwargs):
 class SuggestedEvent(models.Model):
     user = models.ForeignKey(User)
     title = models.CharField(max_length=200)
+
+    # XXX this can be migrated away (together with popcorn_url)
+    # When we do, let's really delete all SuggestedEvent objects
+    # where popcorn_url != null.
+    # See airmozilla/main/migrations/0012_auto_20160204_1503.py for the
+    # initial solution to this.
     upcoming = models.BooleanField(default=True)
+
     slug = models.SlugField(blank=True, max_length=215, unique=True,
                             db_index=True)
     placeholder_img = ImageField(
@@ -598,6 +660,7 @@ class SuggestedEvent(models.Model):
     additional_links = models.TextField(blank=True)
     remote_presenters = models.TextField(blank=True, null=True)
 
+    # XXX this can be migrated away
     popcorn_url = models.URLField(null=True, blank=True)
 
     privacy = models.CharField(max_length=40, choices=Event.PRIVACY_CHOICES,
@@ -617,6 +680,7 @@ class SuggestedEvent(models.Model):
     STATUS_RETRACTED = 'retracted'
     STATUS_REJECTED = 'rejected'
     STATUS_ACCEPTED = 'accepted'
+    STATUS_REMOVED = 'removed'
     STATUS_CHOICES = (
         (STATUS_CREATED, 'Created'),
         (STATUS_SUBMITTED, 'Submitted'),
@@ -624,6 +688,7 @@ class SuggestedEvent(models.Model):
         (STATUS_REJECTED, 'Bounced back'),
         (STATUS_RETRACTED, 'Retracted'),
         (STATUS_ACCEPTED, 'Accepted'),
+        (STATUS_REMOVED, 'Removed'),
     )
     status = models.CharField(
         max_length=40,
@@ -673,7 +738,7 @@ class EventTweet(models.Model):
     creator = models.ForeignKey(User, blank=True, null=True,
                                 on_delete=models.SET_NULL)
     # when to send it
-    send_date = models.DateTimeField(default=_get_now)
+    send_date = models.DateTimeField(default=timezone.now)
     # when it was sent
     sent_date = models.DateTimeField(blank=True, null=True)
     error = models.TextField(blank=True, null=True)
@@ -814,6 +879,37 @@ def event_update_slug(sender, instance, raw, *args, **kwargs):
         pass
 
 
+class VidlyMedia(models.Model):
+    tag = models.CharField(max_length=100)
+    hd = models.BooleanField(default=False)
+    video_format = models.CharField(max_length=100)
+    url = models.URLField()
+    size = models.BigIntegerField()  # bytes
+    content_type = models.CharField(max_length=100)
+
+    created = models.DateTimeField(auto_now_add=True)
+    modified = models.DateTimeField(auto_now=True)
+
+    @classmethod
+    def get_or_create(cls, tag, video_format, hd):
+        qs = cls.objects.filter(
+            tag=tag,
+            video_format=video_format,
+            hd=hd
+        )
+        for obj in qs.order_by('-modified'):
+            return obj
+        data = get_video_redirect_info(tag, video_format, hd)
+        return cls.objects.create(
+            tag=tag,
+            hd=hd,
+            video_format=video_format,
+            url=data['url'],
+            size=data['length'],
+            content_type=data['type']
+        )
+
+
 class URLMatch(models.Model):
     name = models.CharField(max_length=200)
     string = models.CharField(
@@ -838,7 +934,7 @@ class URLTransform(models.Model):
 
 
 class EventHitStats(models.Model):
-    event = models.ForeignKey(Event, unique=True, db_index=True)
+    event = models.OneToOneField(Event, db_index=True)
     total_hits = models.IntegerField()
     shortcode = models.CharField(max_length=100)
     modified = models.DateTimeField(default=_get_now)
@@ -852,7 +948,7 @@ def update_modified(sender, instance, raw, *args, **kwargs):
 
 
 class EventLiveHits(models.Model):
-    event = models.ForeignKey(Event, unique=True, db_index=True)
+    event = models.OneToOneField(Event, db_index=True)
     total_hits = models.IntegerField(default=0)
     modified = models.DateTimeField(auto_now=True)
 
@@ -888,8 +984,8 @@ class Picture(models.Model):
     is_active = models.BooleanField(default=True)
     modified_user = models.ForeignKey(User, null=True,
                                       on_delete=models.SET_NULL)
-    created = models.DateTimeField(default=_get_now)
-    modified = models.DateTimeField(auto_now=True, default=_get_now)
+    created = models.DateTimeField(auto_now_add=True)
+    modified = models.DateTimeField(auto_now=True)
 
     def __repr__(self):
         return "<%s: %r>" % (self.__class__.__name__, self.notes)

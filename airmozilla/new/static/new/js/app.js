@@ -7,9 +7,9 @@ angular.module('new', [
     'new.services'
 ])
 
-.config(function ($urlMatcherFactoryProvider) {
+.config(['$urlMatcherFactoryProvider', function ($urlMatcherFactoryProvider) {
   $urlMatcherFactoryProvider.strictMode(false);
-})
+}])
 
 // .run(['$rootScope', function($rootScope) {
 //     $rootScope.$on('$stateChangeStart',function(event, toState, toParams, fromState, fromParams){
@@ -73,6 +73,11 @@ angular.module('new', [
         url: '/record',
         templateUrl: 'record.html',
         controller: 'RecordController'
+    })
+    .state('youtubeVideo', {
+        url: '/youtube',
+        templateUrl: 'youtube.html',
+        controller: 'YouTubeController'
     })
     .state('preemptiveDetails', {
         url: '/details',

@@ -1,0 +1,55 @@
+{% extends "main/main_base.html" %}
+{% set page='new' %}
+
+{% block site_css %}
+  {{ super() }}
+  {% stylesheet 'new' %}
+{% endblock %}
+
+
+{% block site_js %}
+  {{ super() }}
+  {% javascript 'new_vendor' %}
+  <script src="{{ static('new/jquery-textcomplete/jquery.textcomplete.min.js') }}"></script>
+  {% if DEBUG %}<script src="{{ static('angular/watchcounter.js') }}"></script>{% endif %}
+  {% javascript 's3upload' %}
+  {% javascript 'new' %}
+{% endblock %}
+
+{% block extra_head %}
+{{ super() }}
+<base href="/new/">
+{% endblock %}
+
+{% block banner %}
+    {% include 'main/_banner_small.html' %}
+{% endblock %}
+
+{% block sidebar %}{% endblock %}
+
+{% block content_tag %}
+  ng-app="new"
+  data-has-youtube-api-key="{{ json_print(has_youtube_api_key) }}"
+  data-sign-upload-url="{{ url('uploads:sign') }}"
+  data-verify-size-url="{{ url('uploads:verify_size') }}"
+  data-yours-url="{{ url('new:your_events') }}"
+  data-save-url="{{ url('new:save_upload') }}"
+  data-event-url="{{ url('new:edit', 0) }}"
+  data-archive-url="{{ url('new:archive', 0) }}"
+  data-screencaptures-url="{{ url('new:screencaptures', 0) }}"
+  data-picture-url="{{ url('new:picture', 0) }}"
+  data-summary-url="{{ url('new:summary', 0) }}"
+  data-publish-url="{{ url('new:publish', 0) }}"
+  data-delete-url="{{ url('new:delete', 0) }}"
+  data-video-url="{{ url('new:video', 0) }}"
+  data-videos-url="{{ url('new:videos') }}"
+  data-rotate-url="{{ url('new:pictures_rotate', 0) }}"
+  data-iframe-url="{{ url('main:event_video', 'slug') }}"
+  data-recordrtc-url="{{ static('new/js/RecordRTC.min.js') }}"
+  data-humanizeduration-url="{{ static('new/js/humanize-duration.js') }}"
+  data-silhouette-url="{{ static('new/img/silhouette.png') }}"
+  data-facejs-url="{{ static('new/js/face.js') }}"
+  data-ccvjs-url="{{ static('new/js/ccv.js') }}"
+  data-youtube-extract-url="{{ url('new:youtube_extract') }}"
+  data-youtube-create-url="{{ url('new:youtube_create') }}"
+{% endblock %}

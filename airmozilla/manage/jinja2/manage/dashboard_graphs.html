@@ -1,0 +1,41 @@
+{% extends 'manage/manage_base.html' %}
+{% set page = 'home' %}
+
+{% block manage_title %}
+  Dashboard
+{% endblock %}
+
+{% block site_js %}
+  {{ super() }}
+  <script src="{{ static('manage/js/d3.min.js') }}"></script>
+  <script src="{{ static('angular/angular.min.js') }}"></script>
+  {% javascript 'dashboard_graphs' %}
+{% endblock %}
+
+{% block site_css %}
+  {{ super() }}
+  {% stylesheet 'metricsgraphics' %}
+  {% stylesheet 'dashboard' %}
+{% endblock %}
+
+{% block manage_content %}
+
+<h4 style="position: absolute; right: 20px; top: 20px">
+  <a href="{{ url('manage:dashboard') }}">Numbers</a>
+</h4>
+
+<div ng-app="app" ng-controller="DashboardGraphsController">
+
+  <div class="loading" ng-show="loading">
+    <p>Loading dashboard graphs...</p>
+  </div>
+
+  {% raw %}
+  <div id="events"></div>
+  <div id="users"></div>
+  <div id="revisions"></div>
+  {% endraw %}
+
+</div>
+
+{% endblock %}

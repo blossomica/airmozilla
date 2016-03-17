@@ -1,8 +1,9 @@
 import json
 
-from django.contrib.auth.models import User
-from funfactory.urlresolvers import reverse
 from nose.tools import eq_, ok_
+
+from django.contrib.auth.models import User
+from django.core.urlresolvers import reverse
 
 from airmozilla.base.tests.testbase import DjangoTestCase
 from airmozilla.main.models import Event, CuratedGroup
@@ -284,7 +285,7 @@ class TestStarredEvent(DjangoTestCase):
             else:
                 ok_(match not in response.content, i)
 
-        output = response.content
+        output = response.content.decode('utf-8')
         ok_('href="%s"' % reverse('starred:home', args=(2,)) in output)
         ok_('href="%s"' % reverse('starred:home', args=(0,)) not in output)
 
@@ -298,7 +299,7 @@ class TestStarredEvent(DjangoTestCase):
             else:
                 ok_(match not in response.content, i)
 
-        output = response.content
+        output = response.content.decode('utf-8')
         ok_('href="%s"' % reverse('starred:home', args=(1,)) in output)
         ok_('href="%s"' % reverse('starred:home', args=(3,)) in output)
 
@@ -312,6 +313,6 @@ class TestStarredEvent(DjangoTestCase):
             else:
                 ok_(match not in response.content, i)
 
-        output = response.content
+        output = response.content.decode('utf-8')
         ok_('href="%s"' % reverse('starred:home', args=(2,)) in output)
         ok_('href="%s"' % reverse('starred:home', args=(4,)) not in output)

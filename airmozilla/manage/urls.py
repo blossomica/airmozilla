@@ -30,6 +30,7 @@ from .views import (
     chapters,
     related,
     durations,
+    email_sending,
 )
 
 
@@ -56,6 +57,9 @@ urlpatterns = patterns(
     url(r'^events/(?P<id>\d+)/privacy-vidly-mismatch/$',
         events.event_privacy_vidly_mismatch,
         name='event_privacy_vidly_mismatch'),
+    url(r'^events/(?P<id>\d+)/template-environment-mismatch/$',
+        events.event_template_environment_mismatch,
+        name='event_template_environment_mismatch'),
     url(r'^events/(?P<id>\d+)/assignment/$',
         events.event_assignment,
         name='event_assignment'),
@@ -93,6 +97,8 @@ urlpatterns = patterns(
         name='new_event_tweet'),
     url(r'^events/all/tweets/$', events.all_event_tweets,
         name='all_event_tweets'),
+    url(r'^events/all/tweets/data/$', events.all_event_tweets_data,
+        name='all_event_tweets_data'),
     url(r'^events/archive/(?P<id>\d+)/$', events.event_archive,
         name='event_archive'),
     url(r'^events/archive/(?P<id>\d+)/auto/$',
@@ -330,5 +336,8 @@ urlpatterns = patterns(
     url(r'^durations/$',
         durations.report_all,
         name='durations_report_all'),
+    url(r'^emailsending/$',
+        email_sending.home,
+        name='email_sending'),
 
 )

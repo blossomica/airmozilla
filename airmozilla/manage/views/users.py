@@ -7,8 +7,8 @@ from django.contrib import messages
 from django.shortcuts import render, redirect
 from django.db import transaction
 from django.db.models import Q
+from django.core.urlresolvers import reverse
 
-from funfactory.urlresolvers import reverse
 from jsonview.decorators import json_view
 
 from airmozilla.base.utils import dot_dict
@@ -132,4 +132,4 @@ def user_edit(request, id):
     else:
         form = forms.UserEditForm(instance=user)
     return render(request, 'manage/user_edit.html',
-                  {'form': form, 'user': user})
+                  {'form': form, 'user_': user})

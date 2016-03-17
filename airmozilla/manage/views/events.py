@@ -5,9 +5,13 @@ import re
 import urlparse
 import os
 
+import pytz
+import vobject
+import boto
+
 from django.conf import settings
 from django import http
-from django.contrib.auth.models import User, Group
+from django.contrib.auth.models import User, Group, Permission
 from django.core.cache import cache
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
@@ -17,15 +21,14 @@ from django.db import transaction
 from django.db.models import Q, Sum, Count, Max
 from django.core.exceptions import ImproperlyConfigured
 from django.views.decorators.cache import cache_page
+from django.core.urlresolvers import reverse
 
-import pytz
-from funfactory.urlresolvers import reverse
-import vobject
 from jsonview.decorators import json_view
-import boto
 
-from airmozilla.main.helpers import thumbnail, short_desc
-from airmozilla.manage.helpers import scrub_transform_passwords
+from airmozilla.main.templatetags.jinja_helpers import thumbnail, short_desc
+from airmozilla.manage.templatetags.jinja_helpers import (
+    scrub_transform_passwords,
+)
 from airmozilla.base import mozillians
 from airmozilla.base.utils import (
     paginate,
@@ -51,6 +54,7 @@ from airmozilla.main.models import (
     EventAssignment,
     Picture,
     Chapter,
+    LocationDefaultEnvironment,
 )
 from airmozilla.subtitles.models import AmaraVideo
 from airmozilla.main.views import is_contributor
@@ -60,17 +64,19 @@ from airmozilla.manage import vidly
 from airmozilla.manage import archiver
 from airmozilla.manage import sending
 from airmozilla.manage import videoinfo
+from airmozilla.manage.templatetags.jinja_helpers import full_tweet_url
 from airmozilla.comments.models import Discussion, Comment
 from airmozilla.surveys.models import Survey
 from airmozilla.uploads.models import Upload
-from airmozilla.base.helpers import show_duration
+from airmozilla.base.templatetags.jinja_helpers import show_duration
+from airmozilla.base.utils import STOPWORDS
 from .decorators import (
     staff_required,
     permission_required,
     superuser_required,
     cancel_redirect
 )
-from .utils import can_edit_event, get_var_templates, STOPWORDS
+from .utils import can_edit_event, get_var_templates
 
 
 @staff_required
@@ -171,18 +177,36 @@ def event_request(request, duplicate_id=None):
                 )
                 for moderator in discussion.moderators.all():
                     dup_discussion.moderators.add(moderator)
-
-            messages.success(request,
-                             'Event "%s" created.' % event.title)
+            if form.cleaned_data['curated_groups']:
+                for name in form.cleaned_data['curated_groups']:
+                    CuratedGroup.objects.get_or_create(
+                        name=name,
+                        event=event
+                    )
+            messages.success(
+                request,
+                'Event <a href="{}">{}</a> created.'.format(
+                    reverse('manage:event_edit', args=(event.id,)),
+                    event.title,
+                )
+            )
             return redirect('manage:events')
     else:
+        curated_groups_choices = []
         if duplicate_id and discussion:
             initial['enable_discussion'] = True
         if duplicate_id and curated_groups:
-            initial['curated_groups'] = ', '.join(
-                x.name for x in curated_groups
+            initial['curated_groups'] = curated_groups.values_list(
+                'name',
+                flat=True
             )
-        form = form_class(initial=initial)
+            curated_groups_choices = [
+                (x, x) for x in initial['curated_groups']
+            ]
+        form = form_class(
+            initial=initial,
+            curated_groups_choices=curated_groups_choices
+        )
 
     context = {
         'form': form,
@@ -328,8 +352,6 @@ def events_data(request):
             row['is_upcoming'] = is_upcoming
         if needs_approval:
             row['needs_approval'] = True
-        if event.mozillian:
-            row['mozillian'] = event.mozillian
         if event.id in pictures_counts:
             row['pictures'] = pictures_counts[event.id]
         if event.picture_id:
@@ -410,17 +432,16 @@ def _event_process(request, form, event):
             # we split them by ,
             names = [
                 x.strip() for x in
-                form.cleaned_data['curated_groups'].split(',')
+                form.cleaned_data['curated_groups']
                 if x.strip()
             ]
-            if names:
-                all = mozillians.get_all_groups_cached()
             for name in names:
+                all_groups = mozillians.get_all_groups(name)
                 group, __ = CuratedGroup.objects.get_or_create(
                     event=event,
                     name=name
                 )
-                found = [x for x in all if x['name'] == name]
+                found = [x for x in all_groups if x['name'] == name]
                 if found and found[0]['url'] != group.url:
                     group.url = found[0]['url']
                     group.save()
@@ -502,10 +523,18 @@ def event_edit(request, id):
             return redirect('manage:events')
     else:
         initial = {}
-        initial['curated_groups'] = ','.join(
-            x[0] for x in curated_groups.values_list('name')
+        initial['curated_groups'] = curated_groups.values_list(
+            'name',
+            flat=True
         )
-        form = form_class(instance=event, initial=initial)
+        curated_groups_choices = [
+            (x, x) for x in initial['curated_groups']
+        ]
+        form = form_class(
+            instance=event,
+            initial=initial,
+            curated_groups_choices=curated_groups_choices,
+        )
 
     context = {
         'form': form,
@@ -624,6 +653,50 @@ def event_privacy_vidly_mismatch(request, id):
     return is_privacy_vidly_mismatch(event)
 
 
+@json_view
+@staff_required
+@permission_required('main.change_event')
+@transaction.atomic
+def event_template_environment_mismatch(request, id):
+    event = get_object_or_404(Event, id=id)
+
+    location_default_environment = None
+    # Check if the template_environment of this event is different
+    # from that in a matched LocationDefaultEnvironment.
+    if event.template and event.location:
+        matches = LocationDefaultEnvironment.objects.filter(
+            location=event.location,
+            privacy=event.privacy,
+            template=event.template
+        )
+        for match in matches:
+            if event.template_environment != match.template_environment:
+                # oh noes!
+                location_default_environment = match
+                break
+
+    if request.method == 'POST':
+        assert location_default_environment
+        event.template_environment = (
+            location_default_environment.template_environment
+        )
+        event.save()
+        messages.success(
+            request,
+            'Template environment successfully changed.'
+        )
+        return redirect('manage:event_edit', event.id)
+    else:
+        if location_default_environment:
+            return {
+                'id': location_default_environment.id,
+                'url': reverse('manage:location_edit', args=(
+                    location_default_environment.location.id,
+                )),
+            }
+    return None
+
+
 @staff_required
 @permission_required('main.change_event')
 @cancel_redirect('manage:events')
@@ -638,6 +711,12 @@ def event_edit_duration(request, id):
         form = forms.EventDurationForm(request.POST, instance=event)
         if form.is_valid():
             event = form.save()
+            # For some reason, if you pass it `duration=''` it thinks
+            # you don't want to set this value, so it doesn't change
+            # it. So we manually fix that for this case.
+            if form.cleaned_data['duration'] is None:
+                event.duration = None
+                event.save()
             if event.duration:
                 messages.success(
                     request,
@@ -651,7 +730,10 @@ def event_edit_duration(request, id):
                 )
                 new_duration = Event.objects.get(id=event.id).duration
                 if new_duration is not None:
-                    new_duration = show_duration(new_duration)
+                    new_duration = show_duration(
+                        new_duration,
+                        include_seconds=True
+                    )
                 messages.success(
                     request,
                     'Duration re-set to %s' % new_duration
@@ -791,13 +873,15 @@ def event_upload(request, id):
 def event_assignment(request, id):
     event = get_object_or_404(Event, id=id)
     context = {}
+    permission_required = Permission.objects.get(codename='can_be_assigned')
     assignment, __ = EventAssignment.objects.get_or_create(event=event)
     if request.method == 'POST':
         assignment.event = event
         assignment.save()
         form = forms.EventAssignmentForm(
             instance=assignment,
-            data=request.POST
+            data=request.POST,
+            permission_required=permission_required,
         )
         if form.is_valid():
             form.save()
@@ -808,11 +892,15 @@ def event_assignment(request, id):
             return redirect('manage:event_edit', event.pk)
 
     else:
-        form = forms.EventAssignmentForm(instance=assignment)
+        form = forms.EventAssignmentForm(
+            instance=assignment,
+            permission_required=permission_required,
+        )
 
     context['event'] = event
     context['assignment'] = assignment
     context['form'] = form
+    context['permission_required'] = permission_required
     return render(request, 'manage/event_assignment.html', context)
 
 
@@ -1033,7 +1121,15 @@ def new_event_tweet(request, id):
         form = forms.EventTweetForm(event, data=request.POST)
         if form.is_valid():
             event_tweet = form.save(commit=False)
-            if event_tweet.send_date:
+            # The send_date is automatically assigned on the event.
+            # If the user didn't try to set it, it gets a default date
+            # with a timezone. All is well.
+            # If you did try to set it and used non-timezone-human-text
+            # to try to set it we have to correct it for you.
+            # This is basically because we need to store with timezone
+            # but we can't expect our users to type in timezone information
+            # on the string they're entering into the input field.
+            if event_tweet.send_date and form.cleaned_data['send_date']:
                 assert event.location, "event must have a location"
                 tz = pytz.timezone(event.location.timezone)
                 event_tweet.send_date = tz_apply(event_tweet.send_date, tz)
@@ -1098,7 +1194,6 @@ def new_event_tweet(request, id):
 @transaction.atomic
 def edit_event_tweet(request, id, tweet_id):
     tweet = get_object_or_404(EventTweet, event__id=id, id=tweet_id)
-
     if request.method == 'POST':
         form = forms.EventTweetForm(
             data=request.POST,
@@ -1107,11 +1202,6 @@ def edit_event_tweet(request, id, tweet_id):
         )
         if form.is_valid():
             tweet = form.save()
-            if tweet.send_date:
-                assert tweet.event.location, "event must have a location"
-                tz = pytz.timezone(tweet.event.location.timezone)
-                tweet.send_date = tz_apply(tweet.send_date, tz)
-                tweet.save()
             messages.success(request, 'Tweet saved')
             return redirect('manage:event_tweets', tweet.event.id)
     else:
@@ -1120,27 +1210,61 @@ def edit_event_tweet(request, id, tweet_id):
     context = {
         'form': form,
         'event': tweet.event,
+        'tweet': tweet,
     }
     return render(request, 'manage/edit_event_tweet.html', context)
 
 
 @staff_required
 @permission_required('main.change_event')
-@transaction.atomic
 def all_event_tweets(request):
     """Summary of tweets and submission of tweets"""
-    tweets = (
+    return render(request, 'manage/all_event_tweets.html')
+
+
+@staff_required
+@permission_required('main.change_event')
+@json_view
+def all_event_tweets_data(request):
+    """Summary of tweets and submission of tweets (the data)"""
+    context = {}
+    tweets_qs = (
         EventTweet.objects
         .filter()
         .select_related('event')
         .order_by('-send_date')
     )
-    paged = paginate(tweets, request.GET.get('page'), 10)
-    data = {
-        'paginate': paged,
+    tweets = []
+    for tweet in tweets_qs.select_related('event', 'creator'):
+        each = {
+            'id': tweet.id,
+            'text': tweet.text,
+            'tweet_id': tweet.tweet_id,
+            'failed_attempts': tweet.failed_attempts,
+            'send_date': tweet.send_date.isoformat(),
+            'sent_date': (
+                tweet.sent_date and tweet.sent_date.isoformat() or None
+            ),
+            'event': {
+                'pk': tweet.event.pk,
+                'title': tweet.event.title,
+                '_is_scheduled': tweet.event.is_scheduled(),
+                '_needs_approval': tweet.event.needs_approval(),
+            },
+        }
+        if tweet.creator:
+            each['creator'] = {
+                'email': tweet.creator.email,
+            }
+        if tweet.tweet_id:
+            each['full_tweet_url'] = full_tweet_url(tweet.tweet_id)
+        tweets.append(each)
+    context['tweets'] = tweets
+    context['urls'] = {
+        'manage:event_edit': reverse('manage:event_edit', args=(0,)),
+        'manage:event_tweets': reverse('manage:event_tweets', args=(0,)),
     }
-
-    return render(request, 'manage/all_event_tweets.html', data)
+    return context
 
 
 @staff_required

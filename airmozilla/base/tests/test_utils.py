@@ -9,10 +9,10 @@ from mock import patch
 from django.test.client import RequestFactory
 
 from airmozilla.base import utils
-from airmozilla.base.tests.testbase import Response
+from airmozilla.base.tests.testbase import DjangoTestCase, Response
 
 
-class TestMisc(TestCase):
+class TestMisc(DjangoTestCase):
 
     def test_unhtml(self):
         input_ = 'A <a href="">FOO</a> BAR'
@@ -39,10 +39,22 @@ class TestMisc(TestCase):
         root_url = utils.get_base_url(request)
         eq_(root_url, 'https://testserver')
 
-    def test_get_abs_static(test):
+    def test_get_abs_static(self):
         rq = RequestFactory().get('/')
-        url = utils.get_abs_static('/img/firefox.png', rq)
-        eq_(url, 'http://testserver/img/firefox.png')
+        absolute_relative_path = self._create_static_file('foo.png', 'data')
+        url = utils.get_abs_static('foo.png', rq)
+        eq_(url, 'http://testserver%s' % absolute_relative_path)
+
+    def test_roughly(self):
+        numbers = []
+        for i in range(100):
+            numbers.append(utils.roughly(100, 10))
+        # expect at least one of them to be less than 100
+        ok_([x for x in numbers if x < 100])
+        # same the other way
+        ok_([x for x in numbers if x > 100])
+        ok_(min(numbers) >= 90)
+        ok_(max(numbers) <= 110)
 
 
 class _Communicator(object):

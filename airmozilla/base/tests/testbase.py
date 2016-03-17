@@ -10,6 +10,9 @@ from django.test import TestCase, LiveServerTestCase
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.files import File
+from django.utils import timezone
+
+from pipeline.storage import PipelineCachedStorage
 
 # Calm down the overly verbose sorl.thumbnail logging
 logging.getLogger('sorl.thumbnail.base').setLevel(logging.INFO)
@@ -22,6 +25,23 @@ class DjangoTestCase(TestCase):
     def setUp(self):
         super(DjangoTestCase, self).setUp()
         self._upload_media(self.main_image)
+        self.created_static_files = []
+
+    def tearDown(self):
+        assert os.path.basename(settings.MEDIA_ROOT).startswith('test')
+        if os.path.isdir(settings.MEDIA_ROOT):
+            shutil.rmtree(settings.MEDIA_ROOT)
+        for file_path in self.created_static_files:
+            os.remove(file_path)
+        super(DjangoTestCase, self).tearDown()
+
+    def _create_static_file(self, name, content):
+        file_path = os.path.join(settings.STATIC_ROOT, name)
+        with open(file_path, 'wb') as f:
+            self.created_static_files.append(file_path)
+            f.write(content)
+        storage = PipelineCachedStorage()
+        return storage.url(name)
 
     def shortDescription(self):
         # Stop nose using the test docstring and instead the test method name.
@@ -32,16 +52,12 @@ class DjangoTestCase(TestCase):
         extra['content_type'] = 'application/json'
         return self.client.post(path, json.dumps(data), **extra)
 
-    def tearDown(self):
-        assert os.path.basename(settings.MEDIA_ROOT).startswith('testmedia')
-        if os.path.isdir(settings.MEDIA_ROOT):
-            shutil.rmtree(settings.MEDIA_ROOT)
-
-        super(DjangoTestCase, self).tearDown()
-
     def _login(self, username='mary', email='mary@mozilla.com', pwd='secret'):
         user = User.objects.create_user(
-            username, email, pwd
+            username,
+            email,
+            pwd,
+            last_login=timezone.now()
         )
         assert self.client.login(username=username, password=pwd)
         return user

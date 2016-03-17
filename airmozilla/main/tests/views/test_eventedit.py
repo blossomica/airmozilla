@@ -4,7 +4,7 @@ import os
 from django.contrib.auth.models import Group, User, Permission
 from django.conf import settings
 from django.core.files import File
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 from nose.tools import eq_, ok_
 from airmozilla.main.models import (
     Event,
@@ -35,7 +35,8 @@ class TestEventEdit(DjangoTestCase):
         self._login()
         response = self.client.get(reverse('main:event', args=(event.slug,)))
         eq_(response.status_code, 200)
-        ok_(url in response.content)
+        response_content = response.content.decode('utf-8')
+        ok_(url in response_content)
 
     def test_cant_view(self):
         event = Event.objects.get(title='Test event')
@@ -97,6 +98,35 @@ class TestEventEdit(DjangoTestCase):
         event = Event.objects.get(pk=event.pk)
         eq_(event.title, 'Different title')
 
+    def test_edit_title_cancel(self):
+        event = Event.objects.get(title='Test event')
+        self._attach_file(event, self.main_image)
+        url = reverse('main:event_edit', args=(event.slug,))
+        self._login()
+        data = self._event_to_dict(event)
+        previous = json.dumps(data)
+        data = {
+            'event_id': event.id,
+            'previous': previous,
+            'title': 'Different title',
+            'short_description': event.short_description,
+            'description': event.description,
+            'additional_links': event.additional_links,
+            'tags': ', '.join(x.name for x in event.tags.all()),
+            'channels': [x.pk for x in event.channels.all()],
+            'cancel': 'cancel',  # important!
+        }
+        response = self.client.post(url, data)
+        eq_(response.status_code, 302)
+        self.assertRedirects(
+            response,
+            reverse('main:event', args=(event.slug,))
+        )
+        ok_(not EventRevision.objects.all())
+        # make sure it didn't actually change
+        event = Event.objects.get(id=event.id)
+        eq_(event.title, 'Test event')
+
     def test_edit_channel(self):
         event = Event.objects.get(title='Test event')
         self._attach_file(event, self.main_image)
@@ -157,7 +187,7 @@ class TestEventEdit(DjangoTestCase):
             'short_description': event.short_description,
             'description': event.description,
             'additional_links': event.additional_links,
-            'tags': ', '.join(x.name for x in event.tags.all()),
+            'tags': [x.pk for x in event.tags.all()],
             'channels': [x.pk for x in event.channels.all()]
         }
         response = self.client.post(url, data)
@@ -739,29 +769,30 @@ class TestEventEdit(DjangoTestCase):
 
         # because there's no difference between this and the event now
         # we should NOT have a link to see the difference for the user_revision
+        response_content = response.content.decode('utf-8')
         ok_(
             reverse('main:event_difference',
                     args=(event.slug, user_revision.pk))
-            not in response.content
+            not in response_content
         )
         # but there should be a link to the change
         ok_(
             reverse('main:event_change',
                     args=(event.slug, user_revision.pk))
-            in response.content
+            in response_content
         )
         # since the base revision doesn't have any changes there shouldn't
         # be a link to it
         ok_(
             reverse('main:event_change',
                     args=(event.slug, base_revision.pk))
-            not in response.content
+            not in response_content
         )
         # but there should be a link to the change
         ok_(
             reverse('main:event_difference',
                     args=(event.slug, base_revision.pk))
-            in response.content
+            in response_content
         )
 
     def test_cant_view_all_revision_changes(self):
@@ -886,4 +917,5 @@ class TestEventEdit(DjangoTestCase):
         self._login()
         response = self.client.get(url)
         eq_(response.status_code, 200)
-        ok_(msg1.text in response.content)
+        response_content = response.content.decode('utf-8')
+        ok_(msg1.text in response_content)

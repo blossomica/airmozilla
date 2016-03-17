@@ -19,7 +19,11 @@ urlpatterns = patterns(
     url(r'^$', pages.home, name='home'),
     url(r'^channels/(?P<channel_slug>[-\w]+)/$', pages.home,
         name='home_channels'),
-    url(r'^page/1/$', RedirectView.as_view(url='/'), name='first_page'),
+    url(
+        r'^page/1/$',
+        RedirectView.as_view(url='/', permanent=False),
+        name='first_page'
+    ),
     url(r'^page/(?P<page>\d+)/$', pages.home, name='home'),
     url(r'^channels/(?P<channel_slug>[-\w]+)/page/(?P<page>\d+)/$',
         pages.home, name='home_channels'),
@@ -34,6 +38,9 @@ urlpatterns = patterns(
     url(r'^calendars/$', calendar.calendars, name='calendars'),
     url(r'^calendar/(company|contributors|public).ics$',
         calendar.events_calendar_ical, name='calendar_ical'),
+    url(r'^calendar/(company|contributors|public)'
+        r'/(?P<channel_slug>[-\w]+).ics$',
+        calendar.events_calendar_ical, name='calendar_channel_ical'),
     url(r'^feed/itunes/$',
         # cache_page(60 * 60)(feeds.ITunesFeed()),
         feeds.ITunesFeed(),
@@ -46,6 +53,15 @@ urlpatterns = patterns(
         'company|public|private|contributors)?/?$',
         cache_page(60 * 60)(feeds.EventsFeed()),
         name='feed'),
+    url(r'^feed/(?P<private_or_public>'
+        r'company|public|private|contributors)?/not/'
+        r'(?P<not_channel_slug>[-\w]+)$',
+        cache_page(60 * 60)(feeds.EventsFeed()),
+        name='not_feed'),
+    url(r'^feed/not/'
+        r'(?P<not_channel_slug>[-\w]+)$',
+        cache_page(60 * 60)(feeds.EventsFeed()),
+        name='not_feed'),
     url(r'^feed/(?P<private_or_public>company|public|private|contributors)'
         r'/(?P<format_type>webm)/?$',
         cache_page(60 * 60)(feeds.EventsFeed()),

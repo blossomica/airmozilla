@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 import datetime
 
 from django.contrib.auth.models import Group, User
@@ -6,6 +8,7 @@ from django.utils.timezone import utc
 from django.core.files import File
 
 from nose.tools import ok_, eq_
+import mock
 
 from airmozilla.main.models import (
     Approval,
@@ -18,9 +21,10 @@ from airmozilla.main.models import (
     CuratedGroup,
     VidlySubmission,
     Tag,
+    VidlyMedia,
 )
 
-from airmozilla.base.tests.testbase import DjangoTestCase
+from airmozilla.base.tests.testbase import DjangoTestCase, Response
 # This must be imported otherwise django-nose won't import
 # that foreign key reference when you run only the tests in this file.
 from airmozilla.uploads.models import Upload
@@ -78,6 +82,39 @@ class EventTests(DjangoTestCase):
         event1.start_time -= datetime.timedelta(days=1)
         event1.save()
         eq_(most_recent_event(), event1)
+
+    def test_has_unique_title(self):
+        event, = Event.objects.all()
+        ok_(event.has_unique_title())
+        # create another event
+        Event.objects.create(
+            title=event.title,
+            slug='other',
+            start_time=timezone.now(),
+        )
+        ok_(not event.has_unique_title())
+        event.title += ' difference'
+        event.save()
+        ok_(event.has_unique_title())
+
+    def test_get_unique_title(self):
+        event, = Event.objects.all()
+        event.title += u' Swëdish'
+        event.save()
+        assert event.has_unique_title()
+        eq_(event.get_unique_title(), event.title)
+        Event.objects.create(
+            title=event.title,
+            slug='other',
+            start_time=timezone.now(),
+        )
+        assert not event.has_unique_title()
+        unique_title = event.get_unique_title()
+        ok_(unique_title != event.title)
+
+        event.title += ' difference'
+        event.save()
+        eq_(event.get_unique_title(), event.title)
 
 
 class EventStateTests(DjangoTestCase):
@@ -420,3 +457,85 @@ class VidlySubmissionTests(DjangoTestCase):
             )
         )
         eq_(VidlySubmission.get_least_square_slope(), 1.5)
+
+
+class VidlyMediaTests(DjangoTestCase):
+
+    @mock.patch('requests.head')
+    def test_get_or_create(self, rhead):
+
+        head_requests = []
+
+        def mocked_head(url):
+            head_requests.append(url)
+            if url == 'http://cdn.vidly/file.mp4':
+                return Response('', 302, headers={
+                    'Content-Type': 'video/mp5',
+                    'Content-Length': '2594479502',
+                })
+            else:
+                return Response('', 302, headers={
+                    'Location': 'http://cdn.vidly/file.mp4',
+                })
+
+        rhead.side_effect = mocked_head
+        information = VidlyMedia.get_or_create(
+            'xyz123',
+            'mp4',
+            True
+        )
+        eq_(information.tag, 'xyz123')
+        eq_(information.video_format, 'mp4')
+        eq_(information.hd, True)
+
+        eq_(information.url, 'http://cdn.vidly/file.mp4')
+        eq_(information.content_type, 'video/mp5')
+        eq_(information.size, 2594479502L)
+
+        assert len(head_requests) == 2
+
+        # do it again,
+        same_information = VidlyMedia.get_or_create(
+            'xyz123',
+            'mp4',
+            True
+        )
+        eq_(same_information, information)
+        assert len(head_requests) == 2
+
+    def test_get_or_create_multiples(self):
+
+        first = VidlyMedia.objects.create(
+            tag='xyz123',
+            hd=True,
+            video_format='mp4',
+            url='http://first.com',
+            size=10000,
+            content_type='video/mp4'
+        )
+        information = VidlyMedia.get_or_create(
+            'xyz123',
+            'mp4',
+            True
+        )
+        eq_(information, first)
+
+        # Because the creation of these can happen in non-atomic views
+        # (ie. rendering the itunes feed), you might get a race condition
+        # in creating these so there might be multiples.
+        # The classmethod get_or_create (not to be confused with
+        # objects.get_or_create()) needs to be resilient to this.
+        second = VidlyMedia.objects.create(
+            tag='xyz123',
+            hd=True,
+            video_format='mp4',
+            url='http://second.com',
+            size=10001,
+            content_type='video/mp4'
+        )
+        information = VidlyMedia.get_or_create(
+            'xyz123',
+            'mp4',
+            True
+        )
+        eq_(information, second)

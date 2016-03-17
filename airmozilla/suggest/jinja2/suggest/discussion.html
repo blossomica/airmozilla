@@ -1,0 +1,32 @@
+{% extends 'suggest/suggest_base.html' %}
+
+{% block page_title %}
+Discussion Configuration | {{ super() }}
+{% endblock %}
+
+{% block site_css %}
+  {{ super() }}
+  {% stylesheet 'select2' %}
+  {% stylesheet 'select2_overrides' %}
+  <style>
+  .disabled {
+      opacity: 0.5;
+  }
+  </style>
+{% endblock %}
+
+{% block site_js %}
+  {{ super() }}
+  <script src="{{ static('select2/select2.full.min.js') }}"></script>
+  {% javascript 'suggest_discussion' %}
+{% endblock %}
+
+{% block content_main %}
+  {% include "suggest/_breadcrumb.html" %}
+  <h2 class="section-title">Discussion Configuration</h2>
+
+
+  {% include "suggest/_default_form.html" %}
+
+
+{% endblock %}

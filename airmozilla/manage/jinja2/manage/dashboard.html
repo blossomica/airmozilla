@@ -1,0 +1,79 @@
+{% extends 'manage/manage_base.html' %}
+{% set page = 'home' %}
+
+{% block manage_title %}
+  Dashboard
+{% endblock %}
+
+{% block site_js %}
+  {{ super() }}
+  <script src="{{ static('angular/angular.min.js') }}"></script>
+  {% javascript 'dashboard' %}
+{% endblock %}
+
+{% block site_css %}
+  {{ super() }}
+  {% stylesheet 'dashboard' %}
+{% endblock %}
+
+{% block manage_content %}
+
+<h4 style="position: absolute; right: 20px; top: 20px">
+  <a href="{{ url('manage:dashboard_graphs') }}">Graphs</a>
+</h4>
+
+<div ng-app="app" ng-controller="DashboardController">
+
+  <div class="loading" ng-show="!groups.length">
+    <p>Loading dashboard data...</p>
+  </div>
+
+  {% raw %}
+  <div class="section" ng-repeat="group in groups">
+    <h4>{{ group.name }}</h4>
+    <table class="searches">
+      <thead>
+        <tr>
+          <th title="Starting at midnight of UTC">Today</th>
+          <th title="Starting on the Monday">This week</th>
+          <th title="Starting the 1st of this month">This month</th>
+          <th>This year</th>
+          <th>Ever</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="counts" ng-class="{small: group.small}">
+          <td title="Starting at midnight of UTC">
+            {{ group.counts.today | customNumber}}
+            <span class="prior-count" title="Count for yesterday">
+              {{ group.counts.yesterday | customNumber }}
+            </span>
+          </td>
+          <td title="Starting on the Monday">
+            {{ group.counts.this_week | customNumber}}
+            <span class="prior-count" title="Count for last week">
+              {{ group.counts.last_week | customNumber}}
+            </span>
+          </td>
+          <td title="Starting the 1st of this month">
+            {{ group.counts.this_month | customNumber}}
+            <span class="prior-count" title="Count for last month">
+              {{ group.counts.last_month | customNumber}}
+            </span>
+          </td>
+          <td title="Starting the 1st of January">
+            {{ group.counts.this_year | customNumber}}
+            <span class="prior-count" title="Count for last year">
+              {{ group.counts.last_year | customNumber}}
+            </span>
+          </td>
+          <td>{{ group.counts.ever | customNumber}}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  {% endraw %}
+
+</div>
+
+{% endblock %}
