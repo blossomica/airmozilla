@@ -154,7 +154,7 @@ def check_psql():
         _error("""
         Unable to get a version of `psql`.
 
-        PostgreSQL appear to be be installed! It's needed.
+        PostgreSQL appears to not be installed! It's needed.
         """)
 
 
